@@ -1,6 +1,6 @@
-From 64a125f47ebf75f51f138cb6ccbf5ecdc9382bbd Mon Sep 17 00:00:00 2001
+From ca913c36887096c69effa1d6f97a118373da4cb6 Mon Sep 17 00:00:00 2001
 From: thunderbolt-ibverbs <ci@thunderbolt-ibverbs>
-Date: Sat, 30 May 2026 10:39:00 +0200
+Date: Fri, 2 Oct 2026 17:56:06 +0200
 Subject: [PATCH 1/3] providers/usb4_rdma: add USB4 soft-RDMA provider
 
 Out-of-tree provider for the usb4_rdma kernel module which exposes
@@ -10,12 +10,14 @@ devices.
 Source: https://github.com/hellas-ai/thunderbolt-ibverbs
 ---
  providers/usb4_rdma/CMakeLists.txt   |  14 +
- providers/usb4_rdma/usb4_rdma.c      | 370 +++++++++++++++++++++++++++
+ providers/usb4_rdma/tbv_cq_shm.h     |  44 ++
+ providers/usb4_rdma/usb4_rdma.c      | 583 +++++++++++++++++++++++++++
  providers/usb4_rdma/usb4_rdma.driver |   1 +
  providers/usb4_rdma/usb4_rdma.h      |  26 ++
- providers/usb4_rdma/usb4_rdma_abi.h  |  15 ++
- 5 files changed, 426 insertions(+)
+ providers/usb4_rdma/usb4_rdma_abi.h  |  15 +
+ 6 files changed, 683 insertions(+)
  create mode 100644 providers/usb4_rdma/CMakeLists.txt
+ create mode 100644 providers/usb4_rdma/tbv_cq_shm.h
  create mode 100644 providers/usb4_rdma/usb4_rdma.c
  create mode 100644 providers/usb4_rdma/usb4_rdma.driver
  create mode 100644 providers/usb4_rdma/usb4_rdma.h
@@ -41,12 +43,62 @@ index 0000000..c45c710
 +rdma_provider(usb4_rdma
 +  usb4_rdma.c
 +)
+diff --git a/providers/usb4_rdma/tbv_cq_shm.h b/providers/usb4_rdma/tbv_cq_shm.h
+new file mode 100644
+index 0000000..6658eec
+--- /dev/null
++++ b/providers/usb4_rdma/tbv_cq_shm.h
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
++#ifndef TBV_CQ_SHM_H
++#define TBV_CQ_SHM_H
++#include <linux/types.h>
++
++#define TBV_CQ_SHM_MAGIC 0x54425643u /* "TBVC" */
++#define TBV_CQ_SHM_ABI 2u
++
++/*
++ * Page zero is this header; the remaining pages hold ib_uverbs_wc entries.
++ * The kernel keeps an independent ib_wc ring, containing kernel-only pointers.
++ * Kernel publication uses release stores; polling uses acquire loads. Pollers
++ * serialize on a provider lock and publish consumed only after reading entries.
++ * The kernel validates consumed against its PRIVATE produced/consumed counters.
++ * It never trusts shared metadata, produced, ovf_seq or ring contents.
++ * Private head/tail cursors avoid modulo errors when the totals wrap at 2^32.
++ * ovf_seq is a permanent error latch: overrun makes a CQ unusable (CQ_ERR).
++ * A CQ has one consumer path: mapped provider polling or generic ioctl polling.
++ */
++struct tbv_cq_shm {
++	__u32 magic;
++	__u32 abi;
++	__u32 cqe;
++	__u32 entry_size;
++	__u32 ring_offset;
++	__u32 produced;
++	__u32 consumed;
++	__u32 ovf_seq;
++	__u32 map_len;
++	__u32 reserved[39];
++};
++
++/* Vendor tail after ib_uverbs_create_cq_resp. Zero shm_abi means fallback.
++ * The first valid mmap offset may be zero. map_len permits one full mapping.
++ */
++struct tbv_uresp_create_cq {
++	__aligned_u64 cq_mmap_offset;
++	__u32 cqe;
++	__u32 shm_abi;
++	__u32 reserved;
++	__u32 pad;
++	__aligned_u64 map_len;
++};
++#endif
 diff --git a/providers/usb4_rdma/usb4_rdma.c b/providers/usb4_rdma/usb4_rdma.c
 new file mode 100644
-index 0000000..9c34ff8
+index 0000000..89abc7a
 --- /dev/null
 +++ b/providers/usb4_rdma/usb4_rdma.c
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,583 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/*
 + * usb4_rdma userspace verbs provider — Tier 1 skeleton.
@@ -68,9 +120,11 @@ index 0000000..9c34ff8
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include <sys/mman.h>
 +#include <unistd.h>
 +
 +#include "usb4_rdma.h"
++#include "tbv_cq_shm.h"
 +
 +#define USB4_RDMA_NODE_GUID  0x0200544256524253ULL
 +#define USB4_APPLE_NODE_GUID 0x0200544256524254ULL
@@ -137,35 +191,176 @@ index 0000000..9c34ff8
 +
 +/* ----- cq ---------------------------------------------------------- */
 +
++/* A vendor create response offers a mapped ring. Older kernels, or a failed
++ * mmap, retain generic ioctl polling. Pollers serialize their private cursor.
++ */
++
++struct usb4_rdma_cq {
++	struct ibv_cq base_cq;
++	pthread_spinlock_t lock;
++	uint32_t cqe;
++	struct tbv_cq_shm *hdr;
++	/* Fixed UAPI format; no kernel pointers are mapped. */
++	struct ib_uverbs_wc *ring;
++	size_t map_len;
++	/*
++	 * Consumer-private cursor. The shared state is a pair of monotonic
++	 * totals (see proto/tbv_cq_shm.h); this side keeps only where it has
++	 * read up to, so no shared field has two writers. `head` is the ring
++	 * index and `consumed` the total taken, and they advance together.
++	 */
++	uint32_t head;
++	uint32_t consumed;
++	uint32_t ovf_seen; /* hdr->ovf_seq values already reported */
++	bool debug;
++	unsigned dbg_polls;
++	unsigned dbg_eio;
++};
++
++/* Mirror of the kernel's struct tbv_uresp_create_cq, which is written at the
++ * response base -- i.e. immediately after the generic ib_uverbs_create_cq_resp
++ * this provider declares first. Every field must stay in step with
++ * proto/tbv_cq_shm.h or the two sides disagree silently. */
++struct usb4_rdma_create_cq_resp {
++	struct ib_uverbs_create_cq_resp ibv_resp;
++	__aligned_u64 cq_mmap_offset;
++	uint32_t cqe;
++	uint32_t shm_abi;
++	uint32_t reserved;
++	uint32_t pad;
++	__aligned_u64 map_len;
++};
++
++static bool usb4_rdma_shm_debug(void)
++{
++	return getenv("TBV_SHM_DEBUG") != NULL;
++}
++
++/* Dump the shared header as the CONSUMER sees it. */
++static void usb4_rdma_dump_shm(const char *what, const struct usb4_rdma_cq *cq)
++{
++	const struct tbv_cq_shm *h = cq->hdr;
++
++	if (!cq->debug)
++		return;
++	fprintf(stderr,
++		"[shm] %s: mapped=%d magic=%#x abi=%u cqe=%u entry_size=%u "
++		"ring_offset=%u produced=%u consumed=%u ovf_seq=%u map_len=%u "
++		"[consumer head=%u consumed=%u ovf_seen=%u] "
++		"dbg_polls=%u dbg_eio=%u\n",
++		what, h != NULL,
++		h ? h->magic : 0, h ? h->abi : 0, h ? h->cqe : 0,
++		h ? h->entry_size : 0, h ? h->ring_offset : 0,
++		h ? h->produced : 0, h ? h->consumed : 0,
++		h ? h->ovf_seq : 0, h ? h->map_len : 0,
++		cq->head, cq->consumed, cq->ovf_seen,
++		cq->dbg_polls, cq->dbg_eio);
++	fflush(stderr);
++}
++
 +static struct ibv_cq *usb4_rdma_create_cq(struct ibv_context *ctx, int num_cqe,
 +					  struct ibv_comp_channel *channel,
 +					  int comp_vector)
 +{
-+	struct ib_uverbs_create_cq_resp resp;
-+	struct ibv_create_cq cmd;
-+	struct ibv_cq *cq;
++	struct usb4_rdma_create_cq_resp resp = {};
++	struct ibv_create_cq cmd = {};
++	struct usb4_rdma_cq *cq;
 +	int rv;
 +
 +	cq = calloc(1, sizeof(*cq));
 +	if (!cq)
 +		return NULL;
 +
-+	rv = ibv_cmd_create_cq(ctx, num_cqe, channel, comp_vector, cq,
-+			       &cmd, sizeof(cmd), &resp, sizeof(resp));
++	cq->debug = usb4_rdma_shm_debug();
++	pthread_spin_init(&cq->lock, PTHREAD_PROCESS_PRIVATE);
++	rv = ibv_cmd_create_cq(ctx, num_cqe, channel, comp_vector, &cq->base_cq,
++			       &cmd, sizeof(cmd), &resp.ibv_resp, sizeof(resp));
 +	if (rv) {
++		pthread_spin_destroy(&cq->lock);
 +		free(cq);
 +		errno = rv;
 +		return NULL;
 +	}
-+	return cq;
++
++	if (cq->debug)
++		fprintf(stderr,
++			"[shm] create_cq: requested=%d offered_offset=%#llx "
++			"offered_cqe=%u offered_abi=%u offered_len=%llu\n",
++			num_cqe, (unsigned long long)resp.cq_mmap_offset,
++			resp.cqe, resp.shm_abi,
++			(unsigned long long)resp.map_len);
++	/*
++	 * The offer test keys on shm_abi, NOT on the offset being nonzero. 0 is
++	 * a legitimate offset -- measured: the first CQ this leg created was
++	 * offered exactly 0 -- so the old `if (resp.cq_mmap_offset && ...)`
++	 * silently discarded a real offer, and one of the two CQs perftest
++	 * creates never used the shared ring at all.
++	 *
++	 * ONE mmap for the whole buffer: the kernel publishes map_len in the
++	 * response. The first version mapped a single page to discover the
++	 * length and then remapped, and the kernel rejected that first call
++	 * outright, so the feature never engaged and every poll was an ioctl.
++	 */
++	if (!getenv("TBV_CQ_FORCE_IOCTL") &&
++	    resp.shm_abi == TBV_CQ_SHM_ABI && resp.map_len) {
++		size_t len = resp.map_len;
++		void *m = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED,
++			       ctx->cmd_fd, resp.cq_mmap_offset);
++
++		if (m == MAP_FAILED) {
++			if (cq->debug)
++				fprintf(stderr,
++					"[shm] create_cq: mmap(len=%zu, off=%#llx) failed: %s\n",
++					len,
++					(unsigned long long)resp.cq_mmap_offset,
++					strerror(errno));
++		} else {
++			struct tbv_cq_shm *hdr = m;
++
++			if (hdr->magic == TBV_CQ_SHM_MAGIC &&
++			    hdr->abi == TBV_CQ_SHM_ABI &&
++			    hdr->cqe == resp.cqe && hdr->cqe == (uint32_t)num_cqe &&
++			    hdr->entry_size == sizeof(struct ib_uverbs_wc) &&
++			    hdr->map_len == len &&
++			    hdr->ring_offset +
++				    (size_t)hdr->cqe * sizeof(struct ib_uverbs_wc) <= len) {
++				cq->cqe = hdr->cqe;
++				cq->hdr = hdr;
++				cq->ring = (struct ib_uverbs_wc *)
++					((char *)m + hdr->ring_offset);
++				cq->map_len = len;
++				cq->consumed = hdr->consumed;
++			} else {
++				if (cq->debug)
++					fprintf(stderr,
++						"[shm] create_cq: header REJECTED "
++						"magic=%#x abi=%u cqe=%u entry_size=%u "
++						"ring_offset=%u map_len=%u "
++						"want_len=%zu want_entry=%zu\n",
++						hdr->magic, hdr->abi, hdr->cqe,
++						hdr->entry_size, hdr->ring_offset,
++						hdr->map_len, len,
++						sizeof(struct ib_uverbs_wc));
++				munmap(m, len);
++			}
++		}
++	}
++	usb4_rdma_dump_shm("create_cq", cq);
++	return &cq->base_cq;
 +}
 +
-+static int usb4_rdma_destroy_cq(struct ibv_cq *cq)
++static int usb4_rdma_destroy_cq(struct ibv_cq *base_cq)
 +{
-+	int rv = ibv_cmd_destroy_cq(cq);
++	struct usb4_rdma_cq *cq =
++		container_of(base_cq, struct usb4_rdma_cq, base_cq);
++	int rv;
 +
++	rv = ibv_cmd_destroy_cq(base_cq);
 +	if (rv)
 +		return rv;
++	if (cq->hdr)
++		munmap(cq->hdr, cq->map_len);
++	pthread_spin_destroy(&cq->lock);
 +	free(cq);
 +	return 0;
 +}
@@ -233,10 +428,80 @@ index 0000000..9c34ff8
 +	return ibv_cmd_post_recv(qp, wr, bad_wr);
 +}
 +
-+static int usb4_rdma_poll_cq(struct ibv_cq *cq, int num_entries,
++static int usb4_rdma_poll_cq(struct ibv_cq *base_cq, int num_entries,
 +			     struct ibv_wc *wc)
 +{
-+	return ibv_cmd_poll_cq(cq, num_entries, wc);
++	struct usb4_rdma_cq *cq =
++		container_of(base_cq, struct usb4_rdma_cq, base_cq);
++	struct tbv_cq_shm *hdr = cq->hdr;
++	uint32_t produced, ovf;
++	int polled = 0;
++
++	if (!hdr)
++		return ibv_cmd_poll_cq(base_cq, num_entries, wc);
++
++	if (num_entries <= 0 || !wc)
++		return 0;
++	pthread_spin_lock(&cq->lock);
++	cq->dbg_polls++;
++	/* Overrun permanently invalidates the CQ; never resume after loss. */
++	ovf = __atomic_load_n(&hdr->ovf_seq, __ATOMIC_ACQUIRE);
++	if (ovf) {
++		cq->ovf_seen = ovf;
++		cq->dbg_eio++;
++		if (cq->debug)
++			usb4_rdma_dump_shm("poll -EIO", cq);
++		pthread_spin_unlock(&cq->lock);
++		return -EIO;
++	}
++
++	/*
++	 * Serialized single-consumer read: the producer publishes the entry and
++	 * then the total (release); we read the total (acquire) and then the
++	 * entries, and publish our own total (release). Occupancy is the
++	 * difference of the two totals -- exact at every capacity, including
++	 * the cqe == 1 perftest asks for, where an index comparison cannot
++	 * distinguish full from empty. We keep our own head and consumed, so
++	 * nothing we read has a second writer.
++	 */
++	produced = __atomic_load_n(&hdr->produced, __ATOMIC_ACQUIRE);
++	if (produced - cq->consumed > cq->cqe) {
++		pthread_spin_unlock(&cq->lock);
++		return -EIO;
++	}
++	while (polled < num_entries && produced - cq->consumed > 0) {
++		struct ib_uverbs_wc *u = &cq->ring[cq->head];
++
++		/* ib_uverbs_wc -> ibv_wc, the same field-for-field translation
++		 * ibv_cmd_poll_cq performs on the generic path. */
++		memset(&wc[polled], 0, sizeof(wc[polled]));
++		wc[polled].wr_id      = u->wr_id;
++		wc[polled].status     = u->status;
++		wc[polled].opcode     = u->opcode;
++		wc[polled].vendor_err = u->vendor_err;
++		wc[polled].byte_len   = u->byte_len;
++		wc[polled].imm_data   = u->ex.imm_data;
++		wc[polled].qp_num     = u->qp_num;
++		wc[polled].src_qp     = u->src_qp;
++		wc[polled].wc_flags   = u->wc_flags;
++		wc[polled].pkey_index = u->pkey_index;
++		wc[polled].slid       = u->slid;
++		wc[polled].sl         = u->sl;
++		wc[polled].dlid_path_bits = u->dlid_path_bits;
++		polled++;
++		cq->head = (cq->head + 1) % cq->cqe;
++		cq->consumed++;
++	}
++	if (polled)
++		__atomic_store_n(&hdr->consumed, cq->consumed, __ATOMIC_RELEASE);
++
++	if (cq->debug && cq->dbg_polls <= 8)
++		fprintf(stderr,
++			"[shm] poll #%u: n=%d polled=%d produced_read=%u consumed_out=%u\n",
++			cq->dbg_polls, num_entries, polled, produced,
++			cq->consumed);
++	pthread_spin_unlock(&cq->lock);
++	return polled;
 +}
 +
 +static int usb4_rdma_req_notify_cq(struct ibv_cq *cq, int solicited_only)
@@ -478,5 +743,5 @@ index 0000000..5fd8c2f
 +
 +#endif /* USB4_RDMA_ABI_H */
 -- 
-2.53.0
+2.54.0 (Apple Git-157)
 

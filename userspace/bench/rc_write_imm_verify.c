@@ -47,6 +47,7 @@ struct opts {
 	size_t max_size;
 	double seconds;
 	bool check_byte_len;
+	bool fixed_size;
 };
 
 struct wire_info {
@@ -56,6 +57,7 @@ struct wire_info {
 	uint32_t lid;
 	uint32_t rkey;
 	uint32_t slots;
+	uint32_t fixed_size;
 	uint64_t addr;
 	uint64_t slot_size;
 	uint8_t gid[16];
@@ -159,7 +161,7 @@ static void usage(const char *argv0)
 		"usage: %s --role send|recv --dev DEV [--connect HOST]\n"
 		"          [--tcp-port N] [--gid-index N] [--ib-port N]\n"
 		"          [--slots N] [--depth N] [--max-size BYTES]\n"
-		"          [--seconds S] [--check-byte-len] [--recv-wqes N]\n"
+		"          [--seconds S] [--check-byte-len] [--recv-wqes N] [--fixed-size]\n"
 		"--recv-wqes below --depth makes the sender hit RNR (receiver)\n",
 		argv0);
 }
@@ -196,6 +198,8 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 			o->max_size = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--seconds") && i + 1 < argc)
 			o->seconds = strtod(argv[++i], NULL);
+		else if (!strcmp(argv[i], "--fixed-size"))
+			o->fixed_size = true;
 		else if (!strcmp(argv[i], "--check-byte-len"))
 			o->check_byte_len = true;
 		else if (!strcmp(argv[i], "--recv-wqes") && i + 1 < argc)
@@ -231,9 +235,9 @@ static size_t msg_size(uint32_t n, size_t max_size)
 	x ^= x >> 29;
 	switch (x & 3) {
 	case 0:
-		return x % 4096;		/* one fragment */
+		return x % (max_size < 4095 ? max_size + 1 : 4096);		/* one fragment */
 	case 1:
-		return x % 65536;		/* below the stripe threshold */
+		return x % (max_size < 65535 ? max_size + 1 : 65536);		/* below the stripe threshold */
 	default:
 		return x % (max_size + 1);	/* anything up to max */
 	}
@@ -404,7 +408,7 @@ static int run_recv(const struct opts *o, int fd, struct ibv_qp *qp,
 		}
 
 		uint32_t seq = ntohl(wc.imm_data);
-		size_t len = msg_size(seq, o->max_size);
+		size_t len = (o->fixed_size ? o->max_size : msg_size(seq, o->max_size));
 		uint8_t *slot = buf + (size_t)(seq % o->slots) * o->max_size;
 		size_t bad;
 
@@ -472,7 +476,7 @@ static int run_send(const struct opts *o, int fd, struct ibv_qp *qp,
 			struct ibv_sge sge = {};
 			struct ibv_send_wr wr = {};
 			struct ibv_send_wr *bad = NULL;
-			size_t len = msg_size(posted, o->max_size);
+			size_t len = (o->fixed_size ? o->max_size : msg_size(posted, o->max_size));
 			size_t off = (size_t)(posted % o->slots) * o->max_size;
 
 			fill_pattern(buf + off, posted, len);
@@ -609,6 +613,7 @@ int main(int argc, char **argv)
 	local.lid = port_attr.lid;
 	local.rkey = mr->rkey;
 	local.slots = o.slots;
+	local.fixed_size = o.fixed_size;
 	local.addr = (uintptr_t)buf;
 	local.slot_size = o.max_size;
 	memcpy(local.gid, &gid, sizeof(local.gid));
@@ -616,6 +621,7 @@ int main(int argc, char **argv)
 	if (send_all(fd, &local, sizeof(local)) ||
 	    recv_all(fd, &remote, sizeof(remote)) ||
 	    remote.magic != MAGIC || remote.slots != o.slots ||
+	    remote.fixed_size != o.fixed_size ||
 	    remote.slot_size != o.max_size) {
 		fprintf(stderr, "metadata exchange failed (slots and max-size must match)\n");
 		goto out;

@@ -38,7 +38,6 @@
 #include "../proto/reliability.h"
 #include "../proto/tbv_cq_shm.h"
 #include <rdma/uverbs_ioctl.h>
-#include <rdma/ib_user_verbs.h>
 #include "tbv.h"
 
 #define TBV_IBDEV_ABI_VERSION 1
@@ -262,28 +261,29 @@ struct tbv_cq {
 	struct ib_cq base;
 	struct tbv_state *owner;
 	spinlock_t lock;
-	/*
-	 * One vmalloc_user buffer holds the whole CQ: page 0 is the shared
-	 * header the provider maps, then the kernel's ib_wc ring (which carries
-	 * the qp pointer that no uapi format can), then the ib_uverbs_wc ring
-	 * the provider reads. tail and ovf_seen are PRIVATE indices; the only
-	 * shared state is the pair of monotonic totals in the header, so every
-	 * field has exactly one writer. See proto/tbv_cq_shm.h.
-	 */
+	/* Shared memory is untrusted. All occupancy and indices stay private. */
 	struct tbv_cq_shm *shm;
 	struct ib_wc *entries;
 	struct ib_uverbs_wc *shm_ring;
-	u32 cqe;
-	u32 tail;     /* next ring slot to write; producer-private */
-	u32 ovf_seen; /* ovf_seq this CQ's consumer has already reported */
+	u32 cqe, head, tail, produced, consumed;
+	bool overflowed;
 	bool notify_armed;
 	void *mmap_buf;
 	size_t mmap_len;
 	struct tbv_cq_mmap_entry *mmap_entry;
 };
-static inline u32 tbv_cq_pending(const struct tbv_cq *tcq)
+
+/* Caller holds lock. A process may retire only completions already queued. */
+static bool tbv_cq_sync_consumer(struct tbv_cq *tcq)
 {
-	return READ_ONCE(tcq->shm->produced) - READ_ONCE(tcq->shm->consumed);
+	u32 consumed = smp_load_acquire(&tcq->shm->consumed);
+	u32 delta = consumed - tcq->consumed;
+
+	if (delta > tcq->produced - tcq->consumed)
+		return false;
+	tcq->head = (tcq->head + delta) % tcq->cqe;
+	tcq->consumed = consumed;
+	return true;
 }
 
 struct tbv_recv_wqe {
@@ -2686,7 +2686,7 @@ static int tbv_create_cq(struct ib_cq *cq, const struct ib_cq_init_attr *attr,
 			 struct uverbs_attr_bundle *attrs)
 {
 	struct tbv_cq *tcq = container_of(cq, struct tbv_cq, base);
-	struct ib_udata *udata = &attrs->driver_udata;
+	struct ib_udata *udata = attrs ? &attrs->driver_udata : NULL;
 	size_t len;
 
 	if (!attr || attr->cqe <= 0 || attr->cqe > TBV_IBDEV_MAX_CQE)
@@ -2727,6 +2727,7 @@ static int tbv_create_cq(struct ib_cq *cq, const struct ib_cq_init_attr *attr,
 	spin_lock_init(&tcq->lock);
 	tcq->owner = tbv_ibdev_state(cq->device);
 	tcq->cqe = attr->cqe;
+	cq->cqe = attr->cqe;
 
 	if (udata && udata->outlen >= sizeof(struct tbv_uresp_create_cq)) {
 		struct tbv_uresp_create_cq uresp = {};
@@ -2751,7 +2752,8 @@ static int tbv_create_cq(struct ib_cq *cq, const struct ib_cq_init_attr *attr,
 				uresp.map_len = len;
 				if (ib_copy_to_udata(udata, &uresp, sizeof(uresp))) {
 					rdma_user_mmap_entry_remove(&me->rdma_entry);
-					tcq->mmap_entry = NULL;
+					kfree(tcq->entries);
+					return -EFAULT;
 				}
 			} else {
 				kfree(me);
@@ -2769,20 +2771,14 @@ static int tbv_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 	unsigned long len = vma->vm_end - vma->vm_start;
 	int ret;
 
-	if (vma->vm_start & (PAGE_SIZE - 1)) {
-		pr_info("tbv: mmap pgoff=%lu len=%lu REJECTED: start %#lx is not page aligned\n",
-			vma->vm_pgoff, len, vma->vm_start);
+	if (!(vma->vm_flags & VM_SHARED) || (vma->vm_flags & VM_EXEC))
 		return -EINVAL;
-	}
 	entry = rdma_user_mmap_entry_get(context, vma);
-	if (!entry) {
-		pr_info("tbv: mmap pgoff=%lu len=%lu REJECTED: no mmap entry at that pgoff\n",
-			vma->vm_pgoff, len);
+	if (!entry)
 		return -EINVAL;
-	}
 	me = container_of(entry, struct tbv_cq_mmap_entry, rdma_entry);
-	ret = remap_vmalloc_range(vma, me->address, 0);
-	pr_info("tbv: mmap pgoff=%lu len=%lu -> %d\n", vma->vm_pgoff, len, ret);
+	ret = len == entry->npages * PAGE_SIZE ?
+		remap_vmalloc_range(vma, me->address, 0) : -EINVAL;
 	rdma_user_mmap_entry_put(entry);
 	return ret;
 }
@@ -2792,6 +2788,7 @@ static void tbv_mmap_free(struct rdma_user_mmap_entry *entry)
 	struct tbv_cq_mmap_entry *me =
 		container_of(entry, struct tbv_cq_mmap_entry, rdma_entry);
 
+	vfree(me->address);
 	kfree(me);
 }
 
@@ -2803,8 +2800,9 @@ static int tbv_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 		atomic_dec(&tcq->owner->verbs_cqs);
 	if (tcq->mmap_entry)
 		rdma_user_mmap_entry_remove(&tcq->mmap_entry->rdma_entry);
+	else
+		vfree(tcq->mmap_buf);
 	kfree(tcq->entries);
-	vfree(tcq->mmap_buf);
 	return 0;
 }
 
@@ -6044,23 +6042,16 @@ static int tbv_cq_push(struct tbv_cq *tcq, const struct ib_wc *wc)
 	unsigned long flags;
 	bool notify = false;
 	int ret = 0;
-	u32 produced, consumed;
+	bool cq_error = false;
 
 	spin_lock_irqsave(&tcq->lock, flags);
-	produced = READ_ONCE(tcq->shm->produced);
-	consumed = READ_ONCE(tcq->shm->consumed);
-	if (produced - consumed >= tcq->cqe) {
-		/*
-		 * Advance a sequence, never a latch. A sticky flag made the CQ
-		 * permanently dead, and perftest's `do { } while (ne == 0)` poll
-		 * loop spins on it forever -- which is how one dropped
-		 * completion became an unkillable "poll on Send CQ failed -1".
-		 */
-		WRITE_ONCE(tcq->shm->ovf_seq, tcq->shm->ovf_seq + 1);
+	if (tcq->overflowed || !tbv_cq_sync_consumer(tcq) ||
+	    tcq->produced - tcq->consumed == tcq->cqe) {
+		cq_error = !tcq->overflowed;
+		tcq->overflowed = true;
+		smp_store_release(&tcq->shm->ovf_seq, 1);
 		if (tcq->owner)
 			atomic64_inc(&tcq->owner->data_cq_overflow);
-		pr_info_ratelimited("tbv: CQ overflow cqe=%u produced=%u consumed=%u\n",
-				    tcq->cqe, produced, consumed);
 		if (tcq->notify_armed) {
 			tcq->notify_armed = false;
 			notify = true;
@@ -6075,8 +6066,7 @@ static int tbv_cq_push(struct tbv_cq *tcq, const struct ib_wc *wc)
 	tcq->entries[tcq->tail] = *wc;
 	if (wc)
 		tbv_cqe_from_wc(&tcq->shm_ring[tcq->tail], wc);
-	smp_wmb();
-	WRITE_ONCE(tcq->shm->produced, produced + 1);
+	smp_store_release(&tcq->shm->produced, ++tcq->produced);
 	tcq->tail = (tcq->tail + 1) % tcq->cqe;
 	if (tcq->notify_armed) {
 		tcq->notify_armed = false;
@@ -6084,6 +6074,15 @@ static int tbv_cq_push(struct tbv_cq *tcq, const struct ib_wc *wc)
 	}
 out:
 	spin_unlock_irqrestore(&tcq->lock, flags);
+	if (cq_error && tcq->base.event_handler) {
+		struct ib_event event = {
+			.device = tcq->base.device,
+			.event = IB_EVENT_CQ_ERR,
+			.element.cq = &tcq->base,
+		};
+
+		tcq->base.event_handler(&event, tcq->base.cq_context);
+	}
 	if (overflow_qp)
 		tbv_qp_queue_error(overflow_qp);
 	if (notify && tcq->base.comp_handler)
@@ -9638,31 +9637,22 @@ static int tbv_poll_cq(struct ib_cq *cq, int num_entries, struct ib_wc *wc)
 	struct tbv_cq *tcq = container_of(cq, struct tbv_cq, base);
 	unsigned long flags;
 	int polled = 0;
-	u32 produced, consumed;
 
 	if (num_entries <= 0 || !wc)
 		return 0;
 
 	spin_lock_irqsave(&tcq->lock, flags);
-	/*
-	 * The kernel's own poll is a second CONSUMER of the same ring, so it
-	 * reports overflow on the same terms as the provider's: once per
-	 * event, and without killing the CQ. A client uses one path or the
-	 * other for a given CQ, never both at once.
-	 */
-	if (READ_ONCE(tcq->shm->ovf_seq) != tcq->ovf_seen) {
-		tcq->ovf_seen = READ_ONCE(tcq->shm->ovf_seq);
+	if (tcq->overflowed || !tbv_cq_sync_consumer(tcq)) {
 		spin_unlock_irqrestore(&tcq->lock, flags);
 		return -EIO;
 	}
-	produced = READ_ONCE(tcq->shm->produced);
-	consumed = READ_ONCE(tcq->shm->consumed);
-	while (polled < num_entries && produced - consumed > 0) {
-		wc[polled++] = tcq->entries[consumed % tcq->cqe];
-		consumed++;
+	while (polled < num_entries && tcq->produced != tcq->consumed) {
+		wc[polled++] = tcq->entries[tcq->head];
+		tcq->head = (tcq->head + 1) % tcq->cqe;
+		tcq->consumed++;
 	}
 	if (polled)
-		WRITE_ONCE(tcq->shm->consumed, consumed);
+		smp_store_release(&tcq->shm->consumed, tcq->consumed);
 	spin_unlock_irqrestore(&tcq->lock, flags);
 
 	return polled;
@@ -9675,12 +9665,11 @@ static int tbv_req_notify_cq(struct ib_cq *cq, enum ib_cq_notify_flags flags)
 	int ret;
 
 	spin_lock_irqsave(&tcq->lock, irq_flags);
-	if (READ_ONCE(tcq->shm->ovf_seq) != tcq->ovf_seen) {
-		tcq->ovf_seen = READ_ONCE(tcq->shm->ovf_seq);
+	if (tcq->overflowed || !tbv_cq_sync_consumer(tcq)) {
 		ret = -EIO;
 	} else {
 		tcq->notify_armed = true;
-		ret = tbv_cq_pending(tcq) != 0;
+		ret = tcq->produced != tcq->consumed;
 	}
 	spin_unlock_irqrestore(&tcq->lock, irq_flags);
 	return ret;

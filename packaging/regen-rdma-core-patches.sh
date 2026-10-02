@@ -11,19 +11,35 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$REPO_ROOT/packaging/rdma-core-patches"
 
-# Pull the rdma-core source via Nix; matches whatever pkgs.rdma-core uses.
-RDMA_SRC=$(nix eval --raw "$REPO_ROOT"'#legacyPackages.x86_64-linux.linux_thunderbolt'.outPath 2>/dev/null \
-            || nix-build "<nixpkgs>" -A rdma-core.src --no-out-link)
-if [ ! -d "$RDMA_SRC" ]; then
-    # The .src can be either a directory (github fetcher) or a tarball.
-    RDMA_SRC=$(nix-build '<nixpkgs>' -A rdma-core.src --no-out-link)
+# An explicit clean source directory/tarball permits regeneration without Nix.
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [clean-rdma-core-source-directory-or-tarball]" >&2
+    exit 2
+fi
+if [ "$#" -eq 1 ]; then
+    RDMA_SRC=$1
+else
+    RDMA_SRC=$(nix build --no-link --print-out-paths \
+        "$REPO_ROOT#packages.x86_64-linux.rdma-core-usb4.src")
+fi
+if [ ! -e "$RDMA_SRC" ]; then
+    echo "Missing rdma-core source: $RDMA_SRC" >&2
+    exit 1
 fi
 echo "Using rdma-core source: $RDMA_SRC"
 
 WORK=$(mktemp -d -t rdma-patches-XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
-cp -r "$RDMA_SRC"/. "$WORK/"
+if [ -d "$RDMA_SRC" ]; then
+    cp -r "$RDMA_SRC"/. "$WORK/"
+else
+    tar -xf "$RDMA_SRC" -C "$WORK" --strip-components=1
+fi
+if [ ! -f "$WORK/libibverbs/verbs.h" ] || [ -d "$WORK/providers/usb4_rdma" ]; then
+    echo "Expected a clean rdma-core source tree" >&2
+    exit 1
+fi
 chmod -R u+w "$WORK"
 cd "$WORK"
 
@@ -47,14 +63,18 @@ devices.
 Source: https://github.com/hellas-ai/thunderbolt-ibverbs"
 
 # Wire the provider into the build.
-sed -i '/add_subdirectory(providers\/siw)/a add_subdirectory(providers/usb4_rdma)' CMakeLists.txt
+awk '{ print; if ($0 == "add_subdirectory(providers/siw)")
+    print "add_subdirectory(providers/usb4_rdma)" }' CMakeLists.txt > CMakeLists.txt.new
+mv CMakeLists.txt.new CMakeLists.txt
 git add CMakeLists.txt
 git commit -qm "CMakeLists.txt: build the usb4_rdma provider"
 
 # Declare the provider in the public header so the static-link
 # all_providers.c indirection sees it. rdma-core hand-maintains this
 # list — every in-tree provider has an extern in libibverbs/verbs.h.
-sed -i '/extern const struct verbs_device_ops verbs_provider_siw;/a extern const struct verbs_device_ops verbs_provider_usb4_rdma;' libibverbs/verbs.h
+awk '{ print; if (index($0, "extern const struct verbs_device_ops verbs_provider_siw;"))
+    print "extern const struct verbs_device_ops verbs_provider_usb4_rdma;" }' libibverbs/verbs.h > libibverbs/verbs.h.new
+mv libibverbs/verbs.h.new libibverbs/verbs.h
 git add libibverbs/verbs.h
 git commit -qm "libibverbs/verbs.h: declare verbs_provider_usb4_rdma
 

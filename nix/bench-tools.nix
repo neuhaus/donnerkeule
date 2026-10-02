@@ -26,6 +26,7 @@ let
   # Full Linux set. ibv_trace is an LD_PRELOAD tracer built as .so.
   linuxPrograms = darwinPrograms ++ [
     "rc_qpn_churn"
+    "rc_write_imm_verify"
     "rdma_gid_probe"
   ];
 

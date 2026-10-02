@@ -1,0 +1,394 @@
+{
+  "test_exit": 0,
+  "elapsed": 9.408881917,
+  "hosts": {
+    "fuzzy": [
+      {
+        "cpu": 22,
+        "busy_percent": 77.21,
+        "system_percent": 33.98,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 30,
+        "busy_percent": 40.63,
+        "system_percent": 22.3,
+        "irq_percent": 18.33
+      },
+      {
+        "cpu": 28,
+        "busy_percent": 40.45,
+        "system_percent": 25.51,
+        "irq_percent": 14.94
+      },
+      {
+        "cpu": 10,
+        "busy_percent": 37.68,
+        "system_percent": 21.28,
+        "irq_percent": 16.29
+      },
+      {
+        "cpu": 19,
+        "busy_percent": 31.84,
+        "system_percent": 16.79,
+        "irq_percent": 15.06
+      },
+      {
+        "cpu": 17,
+        "busy_percent": 15.1,
+        "system_percent": 14.31,
+        "irq_percent": 0.2
+      },
+      {
+        "cpu": 3,
+        "busy_percent": 13.08,
+        "system_percent": 12.59,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 18,
+        "busy_percent": 11.13,
+        "system_percent": 11.03,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 7,
+        "busy_percent": 11.05,
+        "system_percent": 10.65,
+        "irq_percent": 0.2
+      },
+      {
+        "cpu": 1,
+        "busy_percent": 6.93,
+        "system_percent": 6.23,
+        "irq_percent": 0.2
+      },
+      {
+        "cpu": 0,
+        "busy_percent": 6.41,
+        "system_percent": 5.71,
+        "irq_percent": 0.6
+      },
+      {
+        "cpu": 16,
+        "busy_percent": 6.01,
+        "system_percent": 5.91,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 4,
+        "busy_percent": 5.95,
+        "system_percent": 5.85,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 6,
+        "busy_percent": 4.58,
+        "system_percent": 2.14,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 5,
+        "busy_percent": 4.3,
+        "system_percent": 4.2,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 21,
+        "busy_percent": 3.92,
+        "system_percent": 3.22,
+        "irq_percent": 0.7
+      },
+      {
+        "cpu": 23,
+        "busy_percent": 3.08,
+        "system_percent": 2.38,
+        "irq_percent": 0.6
+      },
+      {
+        "cpu": 2,
+        "busy_percent": 2.09,
+        "system_percent": 1.27,
+        "irq_percent": 0.64
+      },
+      {
+        "cpu": 20,
+        "busy_percent": 1.43,
+        "system_percent": 0.8,
+        "irq_percent": 0.54
+      },
+      {
+        "cpu": 8,
+        "busy_percent": 1.09,
+        "system_percent": 0.5,
+        "irq_percent": 0.6
+      },
+      {
+        "cpu": 13,
+        "busy_percent": 0.41,
+        "system_percent": 0.1,
+        "irq_percent": 0.2
+      },
+      {
+        "cpu": 12,
+        "busy_percent": 0.3,
+        "system_percent": 0.1,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 11,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 15,
+        "busy_percent": 0.2,
+        "system_percent": 0.2,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 26,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 27,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 31,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 14,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 24,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 9,
+        "busy_percent": 0.0,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 25,
+        "busy_percent": 0.0,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 29,
+        "busy_percent": 0.0,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      }
+    ],
+    "misty": [
+      {
+        "cpu": 23,
+        "busy_percent": 51.76,
+        "system_percent": 24.02,
+        "irq_percent": 0.68
+      },
+      {
+        "cpu": 26,
+        "busy_percent": 40.87,
+        "system_percent": 27.08,
+        "irq_percent": 13.79
+      },
+      {
+        "cpu": 28,
+        "busy_percent": 40.51,
+        "system_percent": 26.8,
+        "irq_percent": 13.71
+      },
+      {
+        "cpu": 30,
+        "busy_percent": 40.24,
+        "system_percent": 26.32,
+        "irq_percent": 13.92
+      },
+      {
+        "cpu": 11,
+        "busy_percent": 39.7,
+        "system_percent": 26.29,
+        "irq_percent": 13.4
+      },
+      {
+        "cpu": 7,
+        "busy_percent": 26.37,
+        "system_percent": 12.37,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 6,
+        "busy_percent": 2.13,
+        "system_percent": 0.81,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 0,
+        "busy_percent": 1.73,
+        "system_percent": 0.51,
+        "irq_percent": 0.71
+      },
+      {
+        "cpu": 18,
+        "busy_percent": 1.18,
+        "system_percent": 0.54,
+        "irq_percent": 0.54
+      },
+      {
+        "cpu": 22,
+        "busy_percent": 1.11,
+        "system_percent": 0.41,
+        "irq_percent": 0.2
+      },
+      {
+        "cpu": 19,
+        "busy_percent": 0.91,
+        "system_percent": 0.36,
+        "irq_percent": 0.55
+      },
+      {
+        "cpu": 9,
+        "busy_percent": 0.8,
+        "system_percent": 0.27,
+        "irq_percent": 0.53
+      },
+      {
+        "cpu": 21,
+        "busy_percent": 0.61,
+        "system_percent": 0.1,
+        "irq_percent": 0.51
+      },
+      {
+        "cpu": 1,
+        "busy_percent": 0.3,
+        "system_percent": 0.2,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 2,
+        "busy_percent": 0.3,
+        "system_percent": 0.1,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 8,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 13,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 16,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 17,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 20,
+        "busy_percent": 0.2,
+        "system_percent": 0.1,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 3,
+        "busy_percent": 0.1,
+        "system_percent": 0.0,
+        "irq_percent": 0.1
+      },
+      {
+        "cpu": 4,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 5,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 10,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 12,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 14,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 15,
+        "busy_percent": 0.1,
+        "system_percent": 0.1,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 24,
+        "busy_percent": 0.1,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 25,
+        "busy_percent": 0.0,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 27,
+        "busy_percent": 0.0,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 29,
+        "busy_percent": 0.0,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      },
+      {
+        "cpu": 31,
+        "busy_percent": 0.0,
+        "system_percent": 0.0,
+        "irq_percent": 0.0
+      }
+    ]
+  }
+}

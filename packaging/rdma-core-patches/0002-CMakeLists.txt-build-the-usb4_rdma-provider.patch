@@ -1,6 +1,6 @@
-From 45cdeef137e9576ced14c81cfdfa0ca0dd7e2b1c Mon Sep 17 00:00:00 2001
+From 023557b63a42cc9888b5174fc105a825a958909b Mon Sep 17 00:00:00 2001
 From: thunderbolt-ibverbs <ci@thunderbolt-ibverbs>
-Date: Sat, 30 May 2026 10:39:00 +0200
+Date: Fri, 2 Oct 2026 17:56:06 +0200
 Subject: [PATCH 2/3] CMakeLists.txt: build the usb4_rdma provider
 
 ---
@@ -8,10 +8,10 @@ Subject: [PATCH 2/3] CMakeLists.txt: build the usb4_rdma provider
  1 file changed, 1 insertion(+)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 718b7d2..b2b9f0c 100644
+index d3fdd7d..8f64c54 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -758,6 +758,7 @@ add_subdirectory(providers/ipathverbs)
+@@ -749,6 +749,7 @@ add_subdirectory(providers/ipathverbs)
  add_subdirectory(providers/rxe)
  add_subdirectory(providers/rxe/man)
  add_subdirectory(providers/siw)
@@ -20,5 +20,5 @@ index 718b7d2..b2b9f0c 100644
  add_subdirectory(libibmad)
  add_subdirectory(libibnetdisc)
 -- 
-2.53.0
+2.54.0 (Apple Git-157)
 

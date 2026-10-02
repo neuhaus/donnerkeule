@@ -1,6 +1,6 @@
-From 3043fc974d36dd07a926f206b66cbcd8d42c9862 Mon Sep 17 00:00:00 2001
+From 3091025abbecd091282dca85ca59631d7c83bfa3 Mon Sep 17 00:00:00 2001
 From: thunderbolt-ibverbs <ci@thunderbolt-ibverbs>
-Date: Sat, 30 May 2026 10:39:00 +0200
+Date: Fri, 2 Oct 2026 17:56:06 +0200
 Subject: [PATCH 3/3] libibverbs/verbs.h: declare verbs_provider_usb4_rdma
 
 Required for the static-archive build path (libibverbs/all_providers.c)
@@ -11,17 +11,17 @@ and most distros.
  1 file changed, 1 insertion(+)
 
 diff --git a/libibverbs/verbs.h b/libibverbs/verbs.h
-index 36d120e..1212662 100644
+index 47cdc06..c884ea5 100644
 --- a/libibverbs/verbs.h
 +++ b/libibverbs/verbs.h
-@@ -2333,6 +2333,7 @@ extern const struct verbs_device_ops verbs_provider_ocrdma;
+@@ -2283,6 +2283,7 @@ extern const struct verbs_device_ops verbs_provider_ocrdma;
  extern const struct verbs_device_ops verbs_provider_qedr;
  extern const struct verbs_device_ops verbs_provider_rxe;
  extern const struct verbs_device_ops verbs_provider_siw;
 +extern const struct verbs_device_ops verbs_provider_usb4_rdma;
  extern const struct verbs_device_ops verbs_provider_vmw_pvrdma;
- extern const struct verbs_device_ops verbs_provider_ionic;
  extern const struct verbs_device_ops verbs_provider_all;
+ extern const struct verbs_device_ops verbs_provider_none;
 -- 
-2.53.0
+2.54.0 (Apple Git-157)
 

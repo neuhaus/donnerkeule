@@ -54,6 +54,19 @@ both report 2 × 10 Gbit/s per cable, on both hosts. Comparing the old absolute
 throughput to the current value therefore mixes different physical link rates.
 The reason for the changed link training has not yet been established.
 
+After unplugging and reconnecting both cables, both hosts again reported
+2 × 20 Gbit/s lanes per cable. Repeating the same perftest command then gave:
+
+| Message size | Generic CQ polling, Gbit/s | Mapped CQ polling, Gbit/s |
+| --- | ---: | ---: |
+| 1 MiB | 44.17 | 44.08 |
+| 4 MiB | 44.66 | 44.74 |
+
+This restores the earlier throughput range with both polling paths. The
+reconnection establishes the link-rate explanation for the 37.4 Gbit/s plateau;
+it does not establish why the links had trained at the lower rate after boot.
+EC power mode remains balanced.
+
 ## CPU distribution
 
 The JSON records per-CPU /proc/stat deltas across the complete 9.41-second

@@ -1,0 +1,30 @@
+[
+  {
+    "label": "cq-bw-replug-ioctl-1048576",
+    "send": 0,
+    "recv": 0,
+    "gbits": 44.17,
+    "output_row": " 1048576    21064            0.00               44.17  \t\t     0.005266"
+  },
+  {
+    "label": "cq-bw-replug-mmap-1048576",
+    "send": 0,
+    "recv": 0,
+    "gbits": 44.08,
+    "output_row": " 1048576    21019            0.00               44.08  \t\t     0.005255"
+  },
+  {
+    "label": "cq-bw-replug-mmap-4194304",
+    "send": 0,
+    "recv": 0,
+    "gbits": 44.74,
+    "output_row": " 4194304    5334             0.00               44.74  \t\t     0.001333"
+  },
+  {
+    "label": "cq-bw-replug-ioctl-4194304",
+    "send": 0,
+    "recv": 0,
+    "gbits": 44.66,
+    "output_row": " 4194304    5324             0.00               44.66  \t\t     0.001331"
+  }
+]

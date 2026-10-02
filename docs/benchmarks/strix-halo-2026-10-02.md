@@ -34,6 +34,26 @@ improvement. An untraced fixed-size 3,565,158-byte run transferred 10,506 messag
 (37,455,549,948 bytes) in 8 seconds at 37.45 Gbit/s, with zero errors. A second
 run at that size also reported 37.45 Gbit/s.
 
+## Matched perftest throughput
+
+The earlier `ib_write_bw` settings (one QP, gid index 1, 6-second duration,
+default queue depth, Gbit/s reporting) were repeated without the verification
+program's extra per-message TCP acknowledgement. Both hosts' gufo user services
+were stopped for this comparison. Both modes still use the same corrected
+kernel and provider; this isolates CQ polling, not the entire kernel patch.
+
+| Message size | Generic CQ polling, Gbit/s | Mapped CQ polling, Gbit/s |
+| --- | ---: | ---: |
+| 1 MiB | 37.38 | 37.42 |
+| 4 MiB | 37.42 | 37.42 |
+
+The old host CSVs report 42.95 / 42.14 Gbit/s and, in another capture,
+44.18 / 44.84 Gbit/s for 1 / 4 MiB. Those captures used 2 × 20 Gbit/s lanes
+per cable (see `docs/IMPROVEMENTS.md`). Current sysfs and driver peer telemetry
+both report 2 × 10 Gbit/s per cable, on both hosts. Comparing the old absolute
+throughput to the current value therefore mixes different physical link rates.
+The reason for the changed link training has not yet been established.
+
 ## CPU distribution
 
 The JSON records per-CPU /proc/stat deltas across the complete 9.41-second

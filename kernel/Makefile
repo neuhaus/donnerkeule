@@ -52,6 +52,8 @@ help:
 	@echo "Parameters:"
 	@echo "  TBV_PROFILING=0      Build without detailed performance tracepoints"
 	@echo "  compat=auto|force|off"
+	@echo "  native_rx_progress=0|1       Serialized native host RX polling (default0)"
+	@echo "  native_rx_recheck_ms=<ms>    Optional same-consumer liveness recheck (default1;0IRQ-only)"
 	@echo "  profile=auto|mac_compat|linux_perf|mixed"
 	@echo "  tbnet=auto|allow|prefer_rdma|block"
 	@echo "  tbnet_identity=auto|stock|stock_proxy|minimal_packet|off"

@@ -26,6 +26,8 @@ static int tbv_debugfs_summary_show(struct seq_file *s, void *unused)
 {
 	struct tbv_state *state = s->private;
 
+	tbv_native_rx_progress_debugfs_show(s);
+
 	seq_printf(s, "profile: %s\n", tbv_profile_name(state->cfg.profile));
 	seq_printf(s, "native_enabled: %u\n", state->cfg.native_enabled);
 	seq_printf(s, "apple_enabled: %u\n", state->cfg.apple_enabled);

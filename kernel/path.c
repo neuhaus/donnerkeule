@@ -4,6 +4,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/thunderbolt.h>
@@ -33,6 +34,105 @@
  */
 #define TBV_DATA_QUEUE_MULTIPLIER 64
 #define TBV_DATA_PACKET_POOL_LIMIT 1024
+
+/* Native RX uses the supported masked-interrupt polling contract. Exactly one
+ * delayed work item owns live RX callbacks. Periodic progress is optional and
+ * uses the same consumer; it cannot race callbacks from a second poller. */
+static bool native_rx_progress;
+module_param(native_rx_progress, bool, 0444);
+MODULE_PARM_DESC(native_rx_progress,
+		 "Use a serialized polling consumer for native host RX (default off)");
+static uint native_rx_recheck_ms = 1;
+module_param(native_rx_recheck_ms, uint, 0444);
+MODULE_PARM_DESC(native_rx_recheck_ms,
+		 "Native RX liveness recheck in ms (1..1000); 0 disables periodic progress");
+#define TBV_RX_PROGRESS_BUDGET 256
+static atomic64_t native_rx_progress_irqs, native_rx_progress_runs;
+static atomic64_t native_rx_progress_frames, native_rx_progress_empty;
+static atomic64_t native_rx_progress_budget;
+
+void tbv_native_rx_progress_debugfs_show(struct seq_file *s)
+{
+	seq_printf(s, "native_rx_progress: %u\n", native_rx_progress);
+	seq_printf(s, "native_rx_recheck_ms: %u\n", native_rx_recheck_ms);
+	seq_printf(s, "native_rx_progress_irqs: %lld\n", atomic64_read(&native_rx_progress_irqs));
+	seq_printf(s, "native_rx_progress_runs: %lld\n", atomic64_read(&native_rx_progress_runs));
+	seq_printf(s, "native_rx_progress_frames: %lld\n", atomic64_read(&native_rx_progress_frames));
+	seq_printf(s, "native_rx_progress_empty: %lld\n", atomic64_read(&native_rx_progress_empty));
+	seq_printf(s, "native_rx_progress_budget: %lld\n", atomic64_read(&native_rx_progress_budget));
+}
+
+/* IRQ callback takes nhi->lock and ring->lock before this lock. Never call a
+ * ring API while holding rx_progress_lock. Holding it across enqueue closes
+ * the disable/cancel versus IRQ/rearm race during path destruction. */
+static void tbv_path_rx_progress_queue(struct tbv_path *path,
+				       unsigned long delay, bool urgent)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&path->rx_progress_lock, flags);
+	if (path->rx_progress_enabled) {
+		if (urgent)
+			mod_delayed_work(system_unbound_wq, &path->rx_progress_work, delay);
+		else
+			queue_delayed_work(system_unbound_wq, &path->rx_progress_work, delay);
+	}
+	spin_unlock_irqrestore(&path->rx_progress_lock, flags);
+}
+
+static void tbv_path_rx_start_poll(void *data)
+{
+	struct tbv_path *path = data;
+
+	atomic64_inc(&native_rx_progress_irqs);
+	tbv_path_rx_progress_queue(path, 0, true);
+}
+
+static void tbv_path_rx_progress_work(struct work_struct *work)
+{
+	struct tbv_path *path = container_of(to_delayed_work(work),
+					     struct tbv_path, rx_progress_work);
+	struct ring_frame *frame;
+	u32 n = 0;
+
+	if (!READ_ONCE(path->rx_progress_enabled))
+		return;
+	atomic64_inc(&native_rx_progress_runs);
+	while (n < TBV_RX_PROGRESS_BUDGET &&
+	       READ_ONCE(path->rx_progress_enabled) &&
+	       (frame = tb_ring_poll(path->rx_ring))) {
+		/* Frame callback reposts its own buffer through tb_ring_rx(). */
+		if (frame->callback)
+			frame->callback(path->rx_ring, frame, false);
+		n++;
+	}
+	atomic64_add(n, &native_rx_progress_frames);
+	if (!n)
+		atomic64_inc(&native_rx_progress_empty);
+	if (!READ_ONCE(path->rx_progress_enabled))
+		return;
+	if (n == TBV_RX_PROGRESS_BUDGET) {
+		/* Retain interrupt mask while draining a burst. Yield between
+		 * batches so continuous traffic cannot monopolize a worker. */
+		atomic64_inc(&native_rx_progress_budget);
+		tbv_path_rx_progress_queue(path, 0, true);
+		return;
+	}
+	tb_ring_poll_complete(path->rx_ring);
+	if (native_rx_recheck_ms)
+		tbv_path_rx_progress_queue(path,
+			max_t(unsigned long, 1, msecs_to_jiffies(native_rx_recheck_ms)), false);
+}
+
+static void tbv_path_rx_progress_disable(struct tbv_path *path)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&path->rx_progress_lock, flags);
+	WRITE_ONCE(path->rx_progress_enabled, false);
+	spin_unlock_irqrestore(&path->rx_progress_lock, flags);
+	cancel_delayed_work_sync(&path->rx_progress_work);
+}
 
 typedef int (*tbv_ring_throttling_fn)(struct tb_ring *ring,
 				      unsigned int interval_nsec);
@@ -614,6 +714,8 @@ void tbv_path_init(struct tbv_path *path,
 	INIT_LIST_HEAD(&path->tx_data_queue);
 	INIT_LIST_HEAD(&path->tx_zcopy_inflight);
 	INIT_DELAYED_WORK(&path->tx_poll_work, tbv_path_tx_poll_work);
+	spin_lock_init(&path->rx_progress_lock);
+	INIT_DELAYED_WORK(&path->rx_progress_work, tbv_path_rx_progress_work);
 	INIT_DELAYED_WORK(&path->rx_supp_poll_work,
 			  tbv_path_rx_supp_poll_work);
 	atomic_set(&path->tx_inflight, 0);
@@ -1252,12 +1354,20 @@ int tbv_path_alloc_rings(struct tbv_path *path, struct tb_xdomain *xd,
 	 * completions.
 	 */
 	path->rx_supp_poll_enabled = false;
+	path->rx_progress_use = native_rx_progress && path->rail &&
+		path->rail->peer && path->rail->peer->backend == TBV_BACKEND_NATIVE &&
+		!tbv_dmabuf_verbs_enabled();
+	if (native_rx_progress && native_rx_recheck_ms > 1000) {
+		ret = -EINVAL;
+		goto err_out_hop;
+	}
 	path->rx_ring = tb_ring_alloc_rx(xd->tb->nhi, rx_hop,
 					 path->cfg.rx_ring_size,
 					 path->cfg.rx_flags, e2e_tx_hop,
 					 path->cfg.sof_mask,
 					 path->cfg.eof_mask,
-					 NULL, NULL);
+					 path->rx_progress_use ? tbv_path_rx_start_poll : NULL,
+					 path->rx_progress_use ? path : NULL);
 	if (!path->rx_ring) {
 		ret = -ENOMEM;
 		goto err_out_hop;
@@ -1324,17 +1434,22 @@ int tbv_path_start_rings(struct tbv_path *path)
 	if (path->state != TBV_PATH_RING_ALLOCATED)
 		return -EINVAL;
 
+	if (path->rx_progress_use)
+		WRITE_ONCE(path->rx_progress_enabled, true);
 	tb_ring_start(path->tx_ring);
 	tb_ring_start(path->rx_ring);
 	path->state = TBV_PATH_RING_STARTED;
 	for (i = 0; i < path->rx_frame_count; i++) {
 		ret = tbv_path_post_rx_frame(&path->rx_frames[i]);
 		if (ret) {
+			tbv_path_rx_progress_disable(path);
 			pr_warn("post RX frame %u/%u failed ret=%d\n", i,
 				path->rx_frame_count, ret);
 			return ret;
 		}
 	}
+	if (path->rx_progress_use && native_rx_recheck_ms)
+		tbv_path_rx_progress_queue(path, 1, false);
 	return 0;
 }
 
@@ -2582,6 +2697,10 @@ void tbv_path_destroy(struct tbv_path *path, struct tb_xdomain *xd)
 	bool tunnel_enabled = path->state == TBV_PATH_TUNNEL_ENABLED;
 	bool rings_started = tunnel_enabled ||
 			     path->state == TBV_PATH_RING_STARTED;
+
+	/* Stop/rearm serialization guarantees no RX work can be queued after
+	 * cancellation. Ring stop then supplies only canceled callbacks. */
+	tbv_path_rx_progress_disable(path);
 
 	/* Build jobs hold rail references, so none is left by now. */
 	cancel_work_sync(&path->build_work);

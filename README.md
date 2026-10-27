@@ -424,6 +424,8 @@ native_domain_mask=<mask>
 zcopy_min_bytes=<bytes>
 qp_timeout_ms=<ms>
 nhi_interrupt_throttle_ns=<ns>
+native_rx_progress=0|1
+native_rx_recheck_ms=<ms>
 ```
 
 Run `make -C kernel help` for the full parameter list.
@@ -431,6 +433,14 @@ Run `make -C kernel help` for the full parameter list.
 Each rail's connection steps (HELLO, READY, rings, tunnel) log at debug
 level; load with `dyndbg=+p` to see them, which also works where kernel
 lockdown (Secure Boot) blocks `/sys/kernel/debug/dynamic_debug/control`.
+
+### Native RX progress
+
+`native_rx_progress=1` opts native host-buffer RX into a single serialized
+polling worker using the kernel interrupt mask/drain/rearm contract.
+`native_rx_recheck_ms=1` adds a liveness recheck through the same consumer;
+set it to `0` for IRQ-only progress. The default keeps the existing RX path.
+See [the design, tests and measured results](docs/NATIVE_RX_PROGRESS.md).
 
 ### One QP across rails
 

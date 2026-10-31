@@ -220,6 +220,14 @@ static int tbv_debugfs_summary_show(struct seq_file *s, void *unused)
 		   atomic64_read(&state->data_rx_repost_failed));
 	seq_printf(s, "data_rx_bad_frame: %lld\n",
 		   atomic64_read(&state->data_rx_bad_frame));
+	seq_printf(s, "data_rx_crc_error: %lld\n",
+		   atomic64_read(&state->data_rx_crc_error));
+	seq_printf(s, "data_rx_overrun: %lld\n",
+		   atomic64_read(&state->data_rx_overrun));
+	seq_printf(s, "data_rx_raw_poisoned: %lld\n",
+		   atomic64_read(&state->data_rx_raw_poisoned));
+	seq_printf(s, "data_rx_raw_poison_drop: %lld\n",
+		   atomic64_read(&state->data_rx_raw_poison_drop));
 	seq_printf(s, "data_rx_bad_header: %lld\n",
 		   atomic64_read(&state->data_rx_bad_header));
 	seq_printf(s, "data_rx_bad_header_parse: %lld\n",

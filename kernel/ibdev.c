@@ -62,6 +62,9 @@
 #define TBV_RX_REORDER_MAX_MESSAGES TBV_IBDEV_MAX_QP_WR
 #define TBV_RX_REORDER_MAX_BYTES (64u * 1024u * 1024u)
 #define TBV_RX_REORDER_MAX_FRAGS TBV_NATIVE_DATA_MAX_FRAGS
+/* tbv_rx_message and tbv_rx_reorder_msg count fragments in u16. */
+static_assert(TBV_RX_REORDER_MAX_FRAGS <= U16_MAX,
+	      "native fragment count overflows the u16 reorder counters");
 #define TBV_ACK_HISTORY_SIZE TBV_IBDEV_MAX_QP_WR
 #define TBV_IBDEV_GID_TBL_LEN 8
 #define TBV_APPLE_PENDING_RX_DEFAULT_SLOTS 4096

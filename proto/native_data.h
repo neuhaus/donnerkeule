@@ -11,10 +11,12 @@
 #define TBV_NATIVE_DATA_MAX_PAYLOAD \
 	(TBV_NATIVE_DATA_FRAME_SIZE - TBV_NATIVE_DATA_HDR_SIZE)
 /*
- * Largest native message. Applications size RDMA windows well above 16 MiB
- * (gufo's TP2 exchanges use 32 MiB windows); fragment counts still fit u16.
+ * Largest native message. Gufo's TP2 prefill exchanges a 16,512-row partial
+ * of 2,560 floats (169,082,880 bytes) in one RDMA WRITE. The receiver counts
+ * fragments in u16, so the cap must stay below 65,535 * 4,048 bytes
+ * (about 253 MiB); the kernel checks this at build time.
  */
-#define TBV_NATIVE_DATA_MAX_MSG_SIZE	(64u * 1024u * 1024u)
+#define TBV_NATIVE_DATA_MAX_MSG_SIZE	(192u * 1024u * 1024u)
 #define TBV_NATIVE_DATA_CREDIT_BATCH	32u
 #define TBV_NATIVE_DATA_MAX_FRAGS \
 	((TBV_NATIVE_DATA_MAX_MSG_SIZE + TBV_NATIVE_DATA_MAX_PAYLOAD - 1u) / \

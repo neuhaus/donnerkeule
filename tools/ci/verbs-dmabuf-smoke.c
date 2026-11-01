@@ -120,13 +120,18 @@ int main(void)
 	assert(tbv_dmabuf_wire_build(packet, sizeof(packet), &m, 1) == 252);
 	packet[188] = 1; /* Unused lane must be zero. */
 	assert(tbv_dmabuf_wire_parse(packet, sizeof(packet), &decoded) == -EINVAL);
-	m = message(4, 64 * 1024 * 1024);
+	m = message(4, TBV_NATIVE_DATA_MAX_MSG_SIZE);
 	m.bytes = 8 * 1024 * 1024;
 	m.offset = 8 * 1024 * 1024;
 	assert(tbv_dmabuf_shape(&m) == 0);
 	m.offset++;
 	assert(tbv_dmabuf_shape(&m) == -EINVAL);
-	m.offset = 64 * 1024 * 1024;
+	m.offset = TBV_NATIVE_DATA_MAX_MSG_SIZE;
+	assert(tbv_dmabuf_shape(&m) == -EINVAL);
+	m.offset = TBV_NATIVE_DATA_MAX_MSG_SIZE - 8 * 1024 * 1024;
+	assert(tbv_dmabuf_shape(&m) == 0); /* Last chunk of the largest message. */
+	m.hdr.length = TBV_NATIVE_DATA_MAX_MSG_SIZE + 1u;
+	m.offset = 0;
 	assert(tbv_dmabuf_shape(&m) == -EINVAL);
 	m.offset = 0;
 	m.bytes = 4095; /* Only the final chunk can have a short tail. */

@@ -228,6 +228,75 @@ static int test_fragment_shapes(void)
 	return 0;
 }
 
+static int max_message_last_fragment(unsigned int total_len,
+				     unsigned int max_payload,
+				     unsigned int *count)
+{
+	unsigned int offset = (total_len - 1u) / max_payload * max_payload;
+	unsigned int idx;
+
+	if (tbv_native_data_fragment_shape(total_len, max_payload,
+					   TBV_NATIVE_DATA_MAX_FRAGS, offset,
+					   total_len - offset, true, &idx,
+					   count))
+		return -1;
+	return idx + 1u == *count ? 0 : -1;
+}
+
+static int test_max_message_size(void)
+{
+	/* Gufo's TP2 prefill partial: 16,512 rows of 2,560 floats + header. */
+	const unsigned int gufo_prefill = 16512u * 2560u * 4u + 64u;
+	struct tbv_native_data_header hdr = {
+		.opcode = TBV_NATIVE_DATA_OP_RDMA_WRITE_IMM,
+		.flags = TBV_NATIVE_DATA_F_LAST | TBV_NATIVE_DATA_F_RAW_STREAM,
+		.dest_qp = 0x900,
+		.src_qp = 0x901,
+		.length = TBV_NATIVE_DATA_MAX_MSG_SIZE,
+	};
+	unsigned char buf[TBV_NATIVE_DATA_HDR_SIZE];
+	struct tbv_native_data_header parsed;
+	unsigned int count;
+
+	if (TBV_NATIVE_DATA_MAX_MSG_SIZE != 192u * 1024u * 1024u ||
+	    TBV_NATIVE_DATA_MAX_FRAGS > 0xffffu)
+		return 1;
+	if (tbv_native_data_build_header(buf, sizeof(buf), &hdr) !=
+	    (int)TBV_NATIVE_DATA_HDR_SIZE)
+		return 2;
+	if (tbv_native_data_parse_header(buf, sizeof(buf), &parsed) ||
+	    parsed.length != TBV_NATIVE_DATA_MAX_MSG_SIZE)
+		return 3;
+	hdr.length = TBV_NATIVE_DATA_MAX_MSG_SIZE + 1u;
+	if (tbv_native_data_build_header(buf, sizeof(buf), &hdr) != -EMSGSIZE)
+		return 4;
+	/* A peer's oversized length is rejected on parse as well. */
+	buf[24] = (unsigned char)hdr.length;
+	buf[25] = (unsigned char)(hdr.length >> 8);
+	buf[26] = (unsigned char)(hdr.length >> 16);
+	buf[27] = (unsigned char)(hdr.length >> 24);
+	if (tbv_native_data_parse_header(buf, sizeof(buf), &parsed) !=
+	    -EMSGSIZE)
+		return 5;
+
+	/* Both WRITE payload sizes fit the receiver's u16 fragment counters. */
+	if (max_message_last_fragment(TBV_NATIVE_DATA_MAX_MSG_SIZE,
+				      TBV_NATIVE_DATA_MAX_PAYLOAD, &count) ||
+	    count != TBV_NATIVE_DATA_MAX_FRAGS)
+		return 6;
+	if (max_message_last_fragment(TBV_NATIVE_DATA_MAX_MSG_SIZE,
+				      TBV_NATIVE_DATA_FRAME_SIZE, &count) ||
+	    count != TBV_NATIVE_DATA_MAX_MSG_SIZE / TBV_NATIVE_DATA_FRAME_SIZE)
+		return 7;
+	if (max_message_last_fragment(gufo_prefill,
+				      TBV_NATIVE_DATA_MAX_PAYLOAD, &count) ||
+	    count != (gufo_prefill + TBV_NATIVE_DATA_MAX_PAYLOAD - 1u) /
+			     TBV_NATIVE_DATA_MAX_PAYLOAD)
+		return 8;
+
+	return 0;
+}
+
 static int test_minimal_tbnet_e2e_policy(void)
 {
 	tbv_tbnet_u32 peer_e2e =
@@ -433,6 +502,8 @@ int main(void)
 		return 17;
 	if (test_apple_tx_window_policy())
 		return 18;
+	if (test_max_message_size())
+		return 19;
 
 	puts("protocol header smoke OK");
 	return 0;

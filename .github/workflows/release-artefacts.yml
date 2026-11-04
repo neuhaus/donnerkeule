@@ -61,6 +61,12 @@ jobs:
             build_dkms: false
             rdma_glob: 'dist/usb4-rdma-provider_*~noble_amd64.deb'
             upload_glob: 'dist/usb4-rdma-provider_*~noble_amd64.deb'
+          - name: ubuntu-resolute
+            distro: ubuntu
+            image: ubuntu:26.04
+            build_dkms: false
+            rdma_glob: 'dist/usb4-rdma-provider_*~resolute_amd64.deb'
+            upload_glob: 'dist/usb4-rdma-provider_*~resolute_amd64.deb'
     steps:
       - uses: actions/checkout@v6
 

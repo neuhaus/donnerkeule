@@ -10,6 +10,7 @@
 # Usage:
 #   ./packaging/test-rdma-patches.sh                # debian:sid (default)
 #   ./packaging/test-rdma-patches.sh ubuntu:24.04
+#   ./packaging/test-rdma-patches.sh ubuntu:26.04
 #   ./packaging/test-rdma-patches.sh archlinux:latest
 #   ./packaging/test-rdma-patches.sh fedora:rawhide
 

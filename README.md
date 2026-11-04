@@ -65,7 +65,7 @@ docker run --rm -it \
     --cap-add=IPC_LOCK --ulimit memlock=-1 \
     pytorch/pytorch:latest bash
 
-# inside the container — pick .jammy for ubuntu 22.04, .noble for 24.04:
+# inside the container — pick .jammy for ubuntu 22.04, .noble for 24.04, .resolute for 26.04:
 apt install -y ibverbs-utils \
     https://github.com/hellas-ai/thunderbolt-ibverbs/releases/latest/download/usb4-rdma-provider_0.3.0.jammy_amd64.deb
 

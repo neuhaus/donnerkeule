@@ -26,5 +26,5 @@ with tempfile.TemporaryDirectory(prefix="tbv-smoke-") as directory:
         ], check=True)
         subprocess.run([binary], check=True)
 for name in ("source-layout", "provider-patches", "verbs-control-state", "verbs-control-lifetime",
-             "verbs-dma-wait", "verbs-post", "verbs-rx-state", "host-credit-peek", "configfs-state", "bench-helpers", "profiling", "framework-desktop"):
+             "verbs-dma-wait", "verbs-post", "verbs-rx-state", "host-credit-peek", "configfs-state", "bench-helpers", "profiling", "framework-desktop", "rx-hardware-errors"):
     subprocess.run([sys.executable, str(ROOT / f"tools/ci/{name}-smoke.py")], check=True)

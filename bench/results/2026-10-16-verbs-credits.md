@@ -28,7 +28,7 @@ and sends CREDIT. The WQE stays posted until the WR arrives. A SEND with the
 same QP, PSN, length and lanes sends a one-way COMMIT and posts its frames
 immediately. The receiver claims the WQE on COMMIT, under the same replay
 watermark and QP/PSN checks as PREPARE. DONE and the STATUS fallback are
-unchanged. The [design and memory contract](../../docs/GPU_VERBS.md#vorbereitete-send-credits)
+unchanged. The [design and memory contract](../../docs/GPU_VERBS.md#prepared-send-credits)
 also cover the other cases:
 
 - A PREPARE that raced a credit still in flight adopts the armed pages, and

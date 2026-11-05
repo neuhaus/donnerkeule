@@ -1,354 +1,326 @@
-# DMA-BUF hinter Verbs: experimenteller Implementierungsstand
+# DMA-BUF behind verbs: experimental implementation status
 
-Update vom 16. Oktober: Die [erneute Treiberprüfung und Posting-Optimierung](../bench/results/2026-10-16-verbs-parity.md)
-bestätigt die vier RC-SEND/WRITE-Operationen mit GPU- und Host-MRs.
-Abwechselndes Posting auf den Rails desselben NHI bringt die geprüften
-1–32-MiB-Zyklen nahe an den normalen Host-Pfad. Kleine Nachrichten bleiben
-langsamer; vollständige Latenzparität und Gufo-Integration sind damit nicht
-qualifiziert. Für diese Messungen war `dmabuf_push_done=1` ausdrücklich gesetzt.
-Die Standardwerte bleiben unverändert.
+Update from October 16: the [repeated driver check and posting optimization](../bench/results/2026-10-16-verbs-parity.md)
+confirms the four RC SEND/WRITE operations with GPU and host MRs.
+Alternating posting across the rails of the same NHI brings the tested
+1–32 MiB cycles close to the normal host path. Small messages remain slower;
+this does not qualify full latency parity or Gufo integration. These
+measurements explicitly set `dmabuf_push_done=1`. The defaults remain unchanged.
 
-Nachtrag: [Vorbereitete SEND-Credits](../bench/results/2026-10-16-verbs-credits.md)
-(`dmabuf_credits=1`, standardmäßig aus) entfernen PREPARE bei GPU-SENDs in
-gepostete Receive-WQEs. Im Muster ohne Barriere sanken 32 B und 10.304 B auf
-etwa 88–91 µs je geprüfter Nachricht; WRITE bleibt unverändert. Siehe
-[Vorbereitete SEND-Credits](#vorbereitete-send-credits).
+Addendum: [prepared SEND credits](../bench/results/2026-10-16-verbs-credits.md)
+(`dmabuf_credits=1`, off by default) remove PREPARE for GPU SENDs into posted
+receive WQEs. In the pattern without a barrier, 32 B and 10,304 B dropped to
+about 88–91 µs per verified message; WRITE is unchanged. See
+[Prepared SEND credits](#prepared-send-credits).
 
-Der neue native Modus `dmabuf_verbs=1` importiert HIP-DMA-BUFs über
-`ibv_reg_dmabuf_mr()` und verwendet ihre NHI-DMA-Adressen hinter normalen
-`ibv_post_send()`, `ibv_post_recv()` und CQ-Completions. Die Nutzdaten werden
-weder auf die CPU abgebildet noch in einen GPU-Zwischenpuffer kopiert.
+The new native mode `dmabuf_verbs=1` imports HIP DMA-BUFs through
+`ibv_reg_dmabuf_mr()` and uses their NHI DMA addresses behind normal
+`ibv_post_send()`, `ibv_post_recv()` and CQ completions. The payload is neither
+mapped to the CPU nor copied into a GPU staging buffer.
 
-Das ist ein separat einschaltbarer experimenteller Implementierungsstand.
-Der erste Stand hat am 5. Oktober 2026 auf fuzzy und misty alle vier Operationen
-mit direkten GPU-MRs bestanden, einschließlich Wächterbytes, unsignaled
-Fehler-Completions, RNR und QP-/MR-Neuerzeugung. Normale Host-MRs bestanden sowohl
-im bisherigen Modus als auch im neuen Staging-Pfad. Der Leistungsvergleich
-zeigt noch höhere WRITE-Latenz als im bisherigen Verbs-Pfad. Ergebnisse,
-behobene Fehler und Protokolle stehen in
+This is an experimental implementation that is enabled separately.
+On October 5, 2026, the first version passed all four operations with direct GPU
+MRs on fuzzy and misty, including guard bytes, unsignaled error completions, RNR
+and QP/MR recreation. Normal host MRs passed both in the previous mode and on
+the new staging path. The performance comparison still shows higher WRITE
+latency than the previous verbs path. Results, fixed bugs and logs are in
 [2026-10-05-verbs-dmabuf.md](../bench/results/2026-10-05-verbs-dmabuf.md).
-Die anschließende [Optimierungsrunde](../bench/results/2026-10-05-verbs-dmabuf-optimization.md)
-indiziert DMA-Adressen, räumt RX beim DMA-Abschluss auf und übergibt große
-Deskriptorpakete parallel an unterschiedliche NHIs. Bei 1 und 20 MiB sank die
-Latenz innerhalb des direkten Pfads um etwa 21 %. Die Lücke zum bisherigen
-Verbs-Pfad bleibt bestehen; Gufo-Modellleistung wurde damit noch nicht gemessen.
-Der anschließend gebaute [NHI-Steuerkanal-Prototyp](../bench/results/2026-10-06-verbs-control-ring.md)
-hat die vollständige Matrix ebenfalls bestanden. Sein isolierter Kontroll-PING
-ist nur wenig schneller als XDomain. Die Test-NHIs haben keine freien Ringe
-neben zwei Datenrails; das Reservieren eines Kontrollrings je Verbindung
-verschlechtert deshalb die großen Transfers. Der Prototyp bleibt separat
-ausgeschaltet (`dmabuf_control_ring=0`).
-Die Variante [aktiv gesendetes DONE auf XDomain](../bench/results/2026-10-07-xdomain-done.md)
-benötigt keine zusätzlichen NHI-Ringe und bleibt separat ausgeschaltet
-(`dmabuf_push_done=0`). Die [Hardwareprüfung vom 8. Oktober](../bench/results/2026-10-08-hardware.md)
-bestand mit GPU- und Host-MRs, Remote-Fehlern, RNR und gezielt verlorenen DONEs.
-Bei 10.304 B sank die gemessene Zykluslatenz um 16,6 %; große Transfers blieben
-praktisch gleichauf. Nach erzwungenem Link-Abbau blieben Daten korrekt, aber
-normale Interrupts und Latenz kehrten erst nach einem ACPI-NHI-Reset zurück.
-Die Messungen vom 2.–4. Oktober in
-[GPU_RDMA_STATUS_2026-10-04.md](GPU_RDMA_STATUS_2026-10-04.md) betreffen den
-früheren exklusiven ioctl-Pfad und dürfen nicht als Messungen dieser Integration
-gelesen werden. Der Standardmodus bleibt `dmabuf_verbs=0`.
+The subsequent [optimization round](../bench/results/2026-10-05-verbs-dmabuf-optimization.md)
+indexes DMA addresses, cleans up RX on DMA completion and hands large descriptor
+packets to different NHIs in parallel. At 1 and 20 MiB, latency within the
+direct path dropped by about 21%. The gap to the previous verbs path remains;
+Gufo model performance has not yet been measured with it.
+The [NHI control channel prototype](../bench/results/2026-10-06-verbs-control-ring.md)
+built afterwards also passed the full matrix. Its isolated control PING is only
+slightly faster than XDomain. The test NHIs have no free rings beside two data
+rails, so reserving one control ring per connection makes large transfers worse.
+The prototype stays disabled separately (`dmabuf_control_ring=0`).
+The [actively sent DONE on XDomain](../bench/results/2026-10-07-xdomain-done.md)
+variant needs no additional NHI rings and also stays disabled separately
+(`dmabuf_push_done=0`). The [hardware check from October 8](../bench/results/2026-10-08-hardware.md)
+passed with GPU and host MRs, remote errors, RNR and deliberately lost DONEs.
+At 10,304 B, the measured cycle latency dropped by 16.6%; large transfers stayed
+practically level. After a forced link teardown the data remained correct, but
+normal interrupts and latency only returned after an ACPI NHI reset.
+The measurements from October 2–4 in
+[GPU_RDMA_STATUS_2026-10-04.md](GPU_RDMA_STATUS_2026-10-04.md) concern the
+earlier exclusive ioctl path and must not be read as measurements of this
+integration. The default mode remains `dmabuf_verbs=0`.
 
-## TCP und bisherige Versuche
+## TCP and previous attempts
 
-Gufo hat den TCP-Header und die TCP-Bestätigung pro normalem Verbs-Austausch
-bereits entfernt: Der Versuch „Header-free RDMA exchange“ in
-`docs/models/qwen3.8-flash-next/EXPERIMENTS.md` verwendet WRITE_WITH_IMM und drei
-Fenster. Dokumentiert sind 46 → 24 µs für eine Zeile sowie +2,5 % AR und
-+4,3 % MTP. Das ist ein anderer Versuch als der direkte HIP-DMA-BUF-Adapter.
+Gufo has already removed the TCP header and TCP acknowledgment per normal verbs
+exchange: the "Header-free RDMA exchange" experiment in
+`docs/models/qwen3.8-flash-next/EXPERIMENTS.md` uses WRITE_WITH_IMM and three
+windows. It documents 46 → 24 µs for one row as well as +2.5% AR and +4.3% MTP.
+That is a different experiment from the direct HIP DMA-BUF adapter.
 
-Der bisherige direkte Adapter stimmt Bereitschaft und Operationen über TCP ab.
-Seine Transportdiagnose war trotz entfallener Nutzdatenkopien langsamer als
-normales Verbs. Die erhaltene Prefill-Überlappung und die verworfene Variante
-mit feinkohärentem RX sind ebenfalls dokumentiert; siehe die Statusdatei.
-DMA-BUF-Import hinter Verbs wurde dort ausdrücklich als nächste Arbeit genannt.
+The previous direct adapter coordinates readiness and operations over TCP.
+Its transport diagnostic was slower than normal verbs despite the removed
+payload copies. The retained prefill overlap and the discarded variant with
+fine-grained coherent RX are also documented; see the status file. It explicitly
+named DMA-BUF import behind verbs as the next piece of work.
 
-Der neue Treibermodus benutzt standardmäßig für PREPARE, STATUS und ABORT den bestehenden
-Thunderbolt-XDomain-Konfigurationskanal. Er benötigt kein TCP pro WR. Anwendungen
-dürfen weiterhin einen anfänglichen TCP-Kanal für GIDs, QPNs, IOVAs und rkeys
-verwenden. Der neue Test schließt diesen Kanal vor dem ersten WR.
+By default, the new driver mode uses the existing Thunderbolt XDomain
+configuration channel for PREPARE, STATUS and ABORT. It needs no TCP per WR.
+Applications may still use an initial TCP channel for GIDs, QPNs, IOVAs and
+rkeys. The new test closes this channel before the first WR.
 
-Der Konfigurationskanal benötigt mindestens eine Vorbereitung und eine
-Bestätigung pro Batch; zusätzlich sind STATUS-Abfragen möglich. Derzeit werden
-WRs über eine globale geordnete Arbeitsqueue serialisiert. Damit ist weder
-geringere Latenz noch eine Verbesserung des Gufo-Prefills nachgewiesen.
-„Kein TCP“ und „keine Kopie“ ersetzen keine Messung dieser Kosten.
+The configuration channel needs at least one preparation and one acknowledgment
+per batch; STATUS queries are possible in addition. WRs are currently serialized
+through a global ordered workqueue. This demonstrates neither lower latency nor
+an improvement in Gufo prefill. "No TCP" and "no copy" do not replace measuring
+these costs.
 
-## Aktiv gesendetes DONE auf XDomain
+## Actively sent DONE on XDomain
 
-`dmabuf_push_done=1` handelt die Fähigkeit `PUSH_DONE` über HELLO aus.
-Unterstützen beide Peers sie und ist kein separater Kontrollring ausgehandelt,
-bleiben PREPARE, seine Bereitschaftsantwort und ABORT auf dem vorhandenen
-XDomain-Konfigurationskanal. Der Empfänger sendet dort jeden vollständig
-platzierten Batch als DONE. Auf den Test-NHIs kann dieser Pfad weiterhin
-`lanes=2` und damit insgesamt vier Datenrails verwenden. Er legt weder weitere
-NHI-Ringe noch HopIDs oder einen periodischen Kontroll-Worker an.
+`dmabuf_push_done=1` negotiates the `PUSH_DONE` capability through HELLO.
+If both peers support it and no separate control ring has been negotiated,
+PREPARE, its readiness response and ABORT stay on the existing XDomain
+configuration channel. The receiver sends each fully placed batch there as DONE.
+On the test NHIs this path can still use `lanes=2`, and thus four data rails in
+total. It creates no further NHI rings or HopIDs and no periodic control worker.
 
-Die Quelle registriert die vollständige Transaktion vor PREPARE. Eine früh
-ankommende Abschlussmeldung bleibt gespeichert; die erfolgreiche Source-CQ
-setzt weiterhin auch den lokalen TX-DMA-Abschluss voraus. Ein leerer WR
-schließt direkt in der PREPARE-Antwort ab, ohne zusätzlichen DONE-Frame oder
-STATUS-Roundtrip. Fehlt die Meldung nach 10 ms, bestätigt die bestehende
-STATUS-Abfrage die gecachte Platzierung. Ein fehlgeschlagener Versand einer
-DONE-Meldung verwirft diese Platzierungsinformation nicht und führt nicht zur
-erneuten Übertragung der Nutzdaten.
+The source registers the complete transaction before PREPARE. A completion
+message that arrives early stays stored; a successful source CQ still also
+requires the local TX DMA completion. An empty WR completes directly in the
+PREPARE response, without an additional DONE frame or STATUS round trip. If the
+message is missing after 10 ms, the existing STATUS query confirms the cached
+placement. A failed send of a DONE message does not discard this placement
+information and does not lead to retransmission of the payload.
 
-DONE wird vor dem allgemeinen XDomain-Antwortmatcher konsumiert. Dieser prüft
-Route und Protokoll-UUID, jedoch nicht unseren Token oder Opcode. Auch
-verspätete oder fehlerhafte DONE-Nachrichten dürfen deshalb keine andere
-PREPARE- oder HELLO-Anfrage beantworten. Nur vollständig validierte Meldungen
-mit passender Boot-Generation, Domain, QPs, PSN, Rails und Batch wecken die
-registrierte Transaktion. Normale Antworten bleiben beim bestehenden Matcher;
-`peer->control_lock` serialisiert diese Anfragen weiterhin. Software-Referenzen
-halten den RX-Abschlusstracker auch bei einem Verbindungsabbau auf einem anderen
-Datenlink gültig; die Hardware-Ringe werden beim Peer-Abbau weiterhin sofort
-gestoppt und freigegeben.
+DONE is consumed before the general XDomain response matcher. That matcher checks
+the route and protocol UUID, but not our token or opcode. Late or malformed DONE
+messages must therefore not answer another PREPARE or HELLO request either. Only
+fully validated messages with a matching boot generation, domain, QPs, PSN, rails
+and batch wake the registered transaction. Normal responses stay with the existing
+matcher; `peer->control_lock` still serializes these requests. Software references
+keep the RX completion tracker valid even when a connection is torn down on another
+data link; the hardware rings are still stopped and freed immediately on peer
+teardown.
 
-Der Modus bestand die genannten Hardwarefälle und bleibt standardmäßig aus.
-Ein schneller automatischer Wiederanlauf nach Link-Abbau ist nicht qualifiziert.
-Für einen isolierten Test setzt das Laborskript
+The mode passed the hardware cases above and stays off by default.
+A fast automatic restart after link teardown is not qualified.
+For an isolated test, the lab script sets
 `TBV_LAB_PUSH_DONE=1 TBV_LAB_CONTROL_RING=0 TBV_LAB_LANES=2`.
-Debugfs zeigt `dmabuf_push_done`, je Peer `push_done: ... ready=1` sowie
-`control_done_rx` und `control_notify_failed`. Die vorhandene Phasenmessung
-trennt `done_wait` von tatsächlich notwendigen STATUS-Anfragen.
-Die reine PING-Messung bleibt auf XDomain und sollte allein durch diesen
-Modus keine kürzere Roundtrip-Zeit erhalten. Er spart Nachrichten pro Batch;
-ein Nutzen für Gufo muss noch gemessen werden.
+Debugfs shows `dmabuf_push_done`, per peer `push_done: ... ready=1`, and
+`control_done_rx` and `control_notify_failed`. The existing phase measurement
+separates `done_wait` from STATUS requests that were actually necessary.
+The plain PING measurement stays on XDomain and should not get a shorter round
+trip from this mode alone. The mode saves messages per batch; any benefit for
+Gufo still has to be measured.
 
-## Separater NHI-Steuerkanal
+## Separate NHI control channel
 
-`dmabuf_control_ring=1` handelt die zusätzliche Fähigkeit über HELLO aus.
-Unterstützen beide Peers sie, richtet XDomain einen eigenen Kontrolltunnel
-über HopID-Austausch und Bereitschaftsbestätigung ein. Danach laufen PREPARE, die Bereitschaftsantwort, ABORT
-und aktiv gesendetes DONE über eigene NHI-Ringe. Bei abgeschalteter Fähigkeit
-auf einem Peer bleibt die Kommunikation auf dem bisherigen XDomain-Pfad.
-Ein bereits begonnenes DMA wechselt den Transport nicht.
+`dmabuf_control_ring=1` negotiates the additional capability through HELLO.
+If both peers support it, XDomain sets up a dedicated control tunnel through
+HopID exchange and readiness confirmation. After that, PREPARE, the readiness
+response, ABORT and actively sent DONE run over dedicated NHI rings. If the
+capability is disabled on one peer, communication stays on the previous XDomain
+path. A DMA that has already started does not switch transport.
 
-Der Kanal verwendet je physischer Verbindung einen TX- und RX-Ring mit 128
-Einträgen, 32 gepoolte TX-Puffer, 64 dauerhaft gepostete RX-Puffer und 64
-vorbereitete Ereignisplätze. Eine Nachricht enthält 256 Byte Host-Metadaten.
-GPU-Nutzdaten bleiben auf ihren exklusiven Datenringen. RX-Callbacks kopieren
-und posten ihren kleinen Host-Puffer erneut; ein separater Worker bereitet
-den GPU-Empfang vor. Bis zu 16 Kontrolltransaktionen werden nach vollständigem
-Token, Boot-Identitäten, Domain, QPs, PSN und Batch zugeordnet. Die globale
-Serialisierung der Nutzdaten-WRs und der aktive einzelne RX-WR bestehen weiter.
+The channel uses one TX and one RX ring with 128 entries per physical connection,
+32 pooled TX buffers, 64 permanently posted RX buffers and 64 prepared event
+slots. A message contains 256 bytes of host metadata. GPU payload stays on its
+exclusive data rings. RX callbacks copy and repost their small host buffer; a
+separate worker prepares the GPU receive. Up to 16 control transactions are matched
+by full token, boot identities, domain, QPs, PSN and batch. The global serialization
+of payload WRs and the single active RX WR remain in place.
 
-Die Quelle registriert DONE schon vor PREPARE und behält eine früh eintreffende
-Meldung bis zum lokalen TX-DMA-Abschluss. Der Empfänger meldet jeden vollständig
-platzierten Batch aktiv. Erst danach darf die Quelle weitergehen. Die Verbs-CQ
-beim Empfänger erscheint weiterhin einmal für den gesamten WR. Leere
-Besitzübergabe-WRs werden unter derselben RX-Sperre sofort abgeschlossen.
-Die bisherigen QP-, PSN-, PD-, rkey-, Bereichs- und Lebensdauerprüfungen gelten
-auch hier.
+The source registers DONE before PREPARE and keeps an early message until the local
+TX DMA completion. The receiver actively reports each fully placed batch. Only then
+may the source continue. The verbs CQ on the receiver still appears once for the
+whole WR. Empty ownership-transfer WRs complete immediately under the same RX lock.
+The existing QP, PSN, PD, rkey, range and lifetime checks apply here as well.
 
-Nach 10 ms ohne DONE fragt die Quelle den gecachten STATUS als Wiederherstellung
-ab. Der normale Austausch benötigt diese Abfrage nicht. Der Prototyp prüft
-zusätzlich jede Millisekunde den Ringfortschritt über die vorhandenen NHI-Worker
-und wartet bei einem vorübergehend belegten TX-Pool auf dessen Freigabe.
-Das behebt im Hardwaretest ausgebliebene Kontroll-TX-Completions, verursacht
-aber zusätzliche CPU-Arbeit.
+After 10 ms without DONE, the source queries the cached STATUS as recovery. The
+normal exchange does not need this query. The prototype additionally checks ring
+progress every millisecond through the existing NHI workers and, when the TX pool
+is temporarily occupied, waits for it to be released. This fixes control TX
+completions that failed to arrive in the hardware test, but causes additional CPU
+work.
 
-**Ringbudget auf fuzzy und misty:** Jeder NHI meldet drei Hops. Hop 0 gehört
-dem Konfigurationskanal; zwei Datenrails belegen die übrigen Ringe. Für diesen
-Prototyp deshalb auf beiden Hosts `lanes=1` verwenden: ein Datenring und ein
-Kontrollring je NHI, insgesamt zwei Datenrails über beide Kabel. Ohne freien
-Ring wird der angeforderte Kanal abgewiesen. Solange er nicht bereitsteht,
-werden GPU-WRs mit `ENOTCONN` abgewiesen. Vor dem Test in Debugfs `peers` für jede
-Verbindung `control_ring: ... ready=1` prüfen.
+**Ring budget on fuzzy and misty:** each NHI reports three hops. Hop 0 belongs to
+the configuration channel; two data rails occupy the remaining rings. For this
+prototype, therefore use `lanes=1` on both hosts: one data ring and one control
+ring per NHI, two data rails in total across both cables. Without a free ring the
+requested channel is rejected. As long as it is not ready, GPU WRs are rejected
+with `ENOTCONN`. Before testing, check `control_ring: ... ready=1` for each
+connection in debugfs `peers`.
 
-Die rootgeschützte Messfunktion benötigt keine GPU-Allokation. Sie führt
-1–100.000 Kontroll-PINGs auf dem angegebenen Peer aus und liefert Mittelwert,
-Minimum, Median, P95, P99 und Maximum in Nanosekunden. Ein Modulparameter
-ermöglicht die Messung unter dem bestehenden Kernel-Lockdown:
+The root-protected measurement function needs no GPU allocation. It runs
+1–100,000 control PINGs on the given peer and returns mean, minimum, median, P95,
+P99 and maximum in nanoseconds. A module parameter makes the measurement possible
+under the existing kernel lockdown:
 
 ```sh
 echo '1 50000' | sudo tee /sys/module/thunderbolt_ibverbs/parameters/dmabuf_control_bench
 sudo cat /sys/module/thunderbolt_ibverbs/parameters/dmabuf_control_bench
 ```
 
-In Debugfs `peers` stehen Ringbereitschaft, Fehler, gesendete/empfangene
-Kontrollframes, PREPARE, DONE, STATUS, unbeantwortete Zuordnungen und Pooldruck.
-`control_tx_ns` und `control_rx_work_ns` sind verstrichene Bearbeitungszeiten,
-keine isolierten CPU-Zyklen. Die separate Messung und der Vergleich bei
-gleicher sowie voller Datenrail-Zahl stehen im Ergebnisbericht.
+Debugfs `peers` shows ring readiness, errors, sent/received control frames,
+PREPARE, DONE, STATUS, unanswered matches and pool pressure. `control_tx_ns` and
+`control_rx_work_ns` are elapsed handling times, not isolated CPU cycles. The
+separate measurement and the comparison at equal and at full data rail count are
+in the results report.
 
-## Vorbereitete SEND-Credits
+## Prepared SEND credits
 
-`dmabuf_credits=1` (Standard 0) entfernt bei GPU-SENDs den PREPARE-Roundtrip
-vom kritischen Pfad. Voraussetzung sind `dmabuf_push_done=1`,
-`dmabuf_control_ring=0` und die über HELLO ausgehandelte Fähigkeit
-`DMABUF_CREDIT` auf beiden Peers; sonst bleibt der bisherige Ablauf aktiv.
-Die Frames eines NHI-RX-Rings landen in der Reihenfolge der geposteten
-Deskriptoren. Ein Ziel muss deshalb vor den Daten bekannt sein. Bei SEND
-kennt es der Empfänger: Es ist die nächste Receive-WQE. Bei WRITE kennt es
-nur der Sender; WRITE behält PREPARE.
+`dmabuf_credits=1` (default 0) removes the PREPARE round trip from the critical
+path for GPU SENDs. It requires `dmabuf_push_done=1`, `dmabuf_control_ring=0` and
+the `DMABUF_CREDIT` capability negotiated through HELLO on both peers; otherwise
+the previous flow stays active. The frames of an NHI RX ring land in the order of
+the posted descriptors, so a destination must be known before the data. For SEND,
+the receiver knows it: it is the next receive WQE. For WRITE, only the sender
+knows it; WRITE keeps PREPARE.
 
-Ablauf:
+Flow:
 
-1. Nach einem erfolgreich platzierten GPU-SEND bzw. SEND_WITH_IMM merkt sich
-   der Empfänger QP, Länge und Lanes. Steht die nächste WQE schon bereit oder
-   wird sie später gepostet (`ibv_post_recv()`), prüft der Treiber sie wie
-   bei PREPARE (QP, PD, lkey, Rechte, Bereich, 4-KiB-Ausrichtung) und armiert
-   ihre GPU-Seiten für genau diese Länge und den erwarteten PSN. Die WQE
-   bleibt gepostet. Anschließend sendet er CREDIT an den Sender.
-2. Ein SEND mit gleichem Ziel-QP, PSN, gleicher Länge und gleichen Lanes
-   verwendet den Credit. Der Sender meldet COMMIT einseitig mit den vollständigen
-   WR-Metadaten und postet seine Frames sofort, ohne auf eine Antwort zu
-   warten. Der Empfänger übernimmt die WQE erst bei COMMIT; Replay-Wasserzeichen,
-   QP-, PSN- und Lane-Prüfungen gelten wie bei PREPARE. DONE und die
-   STATUS-Wiederherstellung bleiben unverändert.
-3. Kreuzt sich ein PREPARE mit einem noch unterwegs befindlichen Credit,
-   übernimmt der Empfänger das Armieren für diesen PREPARE und nennt den
-   Credit in READY. Der Sender verwirft ihn dann.
-4. Ein Credit, den der nächste WR nicht verwenden kann (andere Länge oder
-   Operation, mehrere Batches), wird vor dessen PREPARE freigegeben: Der
-   Sender füllt genau die armierten Frames mit Nullen und meldet RELEASE. Ein
-   nicht passender PREPARE erhält BUSY und löst ein CANCEL aus. QP-Zerstörung
-   oder QP-Fehler beim Empfänger fordert die Freigabe ebenfalls an und wartet
-   bis zu 500 ms. Ohne RELEASE werden die Rails wie bei jedem Abbruch nach dem
-   Armieren stillgelegt.
-5. Erhält ein PREPARE RNR, wartet der Sender bis zu 2 ms auf einen Credit
-   statt 1–2 ms zu schlafen und erneut zu fragen. Das Posten der WQE beim
-   Empfänger ist damit das Signal zum Senden.
+1. After a successfully placed GPU SEND or SEND_WITH_IMM, the receiver remembers
+   the QP, length and lanes. If the next WQE is already available or gets posted
+   later (`ibv_post_recv()`), the driver checks it as with PREPARE (QP, PD, lkey,
+   access rights, range, 4 KiB alignment) and arms its GPU pages for exactly this
+   length and the expected PSN. The WQE stays posted. The receiver then sends
+   CREDIT to the sender.
+2. A SEND with the same destination QP, PSN, same length and same lanes uses the
+   credit. The sender reports COMMIT one-way with the complete WR metadata and
+   posts its frames immediately, without waiting for a response. The receiver only
+   takes over the WQE on COMMIT; replay watermark, QP, PSN and lane checks apply as
+   with PREPARE. DONE and STATUS recovery stay unchanged.
+3. If a PREPARE crosses a credit still in flight, the receiver takes over the
+   arming for this PREPARE and names the credit in READY. The sender then discards
+   the credit.
+4. A credit that the next WR cannot use (different length or operation, multiple
+   batches) is released before that WR's PREPARE: the sender fills exactly the
+   armed frames with zeros and reports RELEASE. A non-matching PREPARE receives
+   BUSY and triggers a CANCEL. QP destruction or a QP error on the receiver also
+   requests the release and waits up to 500 ms. Without RELEASE, the rails are
+   stopped as with any abort after arming.
+5. If a PREPARE receives RNR, the sender waits up to 2 ms for a credit instead of
+   sleeping 1–2 ms and asking again. Posting the WQE on the receiver thus becomes
+   the signal to send.
+6. If no other TX job is queued or active, `ibv_post_send()` itself takes a
+   matching credit, sends COMMIT and posts the frames (`dmabuf_direct_post=1`,
+   default). The TX worker then only waits for DMA and DONE and completes the WR.
+   This saves waking the worker before the data. One lock covers the idle check,
+   direct posting and queueing, so later WRs stay behind it.
 
-6. Ist kein anderer TX-Auftrag eingereiht oder aktiv, nimmt bereits
-   `ibv_post_send()` einen passenden Credit, sendet COMMIT und postet die
-   Frames (`dmabuf_direct_post=1`, Standard). Der TX-Worker wartet danach nur
-   noch auf DMA und DONE und schließt den WR ab. Das spart das Aufwecken des
-   Workers vor den Daten. Eine Sperre umfasst Leerlaufprüfung, direktes
-   Posten und Einreihen, sodass spätere WRs dahinter bleiben.
+Credits apply to one batch only and to at most `dmabuf_credit_max` bytes
+(default 1 MiB). There is at most one armed credit per receiver, just as there is
+only one active RX transaction. The credit number sits in the previously reserved
+field at byte 164; older peers do not negotiate the capability.
 
-Credits gelten nur für einen Batch und höchstens `dmabuf_credit_max` Byte
-(Standard 1 MiB). Es gibt höchstens einen armierten Credit je Empfänger, wie
-es auch nur eine aktive RX-Transaktion gibt. Die Credit-Nummer liegt im bisher
-reservierten Feld bei Byte 164; ältere Peers handeln die Fähigkeit nicht aus.
+**Memory contract in credit mode:** while a GPU receive WQE is posted, a release
+can overwrite its first `ALIGN(L, 4096)` bytes with zeros, where L is the length of
+the previous SEND on this QP. This only happens when the following WR does not use
+the credit. Bytes beyond the length of a SEND that is later received shorter are
+then no longer the values written before posting. Anyone who expects contents
+behind the received length must not use this mode.
 
-**Speichervertrag im Credit-Modus:** Solange eine GPU-Receive-WQE gepostet ist,
-kann eine Freigabe ihre ersten `ALIGN(L, 4096)` Byte mit Nullen überschreiben,
-wobei L die Länge des vorherigen SENDs auf diesem QP ist. Das geschieht nur,
-wenn der folgende WR den Credit nicht verwendet. Bytes jenseits der Länge eines
-später kürzer empfangenen SENDs sind dann nicht mehr die vor dem Posten
-geschriebenen Werte. Wer Inhalte hinter der empfangenen Länge erwartet, darf
-den Modus nicht verwenden.
-
-Debugfs `summary` zeigt `dmabuf_credits`, `dmabuf_credit_max` sowie
+Debugfs `summary` shows `dmabuf_credits`, `dmabuf_credit_max` as well as
 `dmabuf_credit_granted`, `committed`, `adopted`, `released`, `canceled`,
-`aborted` (Empfänger) und `used`, `returned`, `stale`, `direct` (Sender). `mismatch`
-zählt unerwartete Credit-Meldungen; deren Lanes werden stillgelegt.
-Profiling-Tracepoints: `credit_grant`, `credit_received`, `credit_commit`,
+`aborted` (receiver) and `used`, `returned`, `stale`, `direct` (sender). `mismatch`
+counts unexpected credit messages; their lanes are stopped.
+Profiling tracepoints: `credit_grant`, `credit_received`, `credit_commit`,
 `credit_commit_rx`, `credit_release`, `credit_release_rx`, `rnr_credit_wait`,
 `tx_direct`.
 
-## Schnittstelle und Speichervertrag
+## Interface and memory contract
 
-- Native RC-QPs: SEND, SEND_WITH_IMM, RDMA_WRITE und RDMA_WRITE_WITH_IMM.
-  RDMA_READ, UC, GSI, SRQ und GPU-Scatter/Gather sind in diesem Modus noch nicht
-  unterstützt. Der Standardmodus behält seine bisherigen Operationen.
-- MR-Import: gültiger DMA-BUF-FD, Offset, Länge und IOVA mit Seitenausrichtung;
-  maximal 256 MiB pro Exportobjekt. Zulässige Rechte sind LOCAL_WRITE und
-  REMOTE_WRITE; REMOTE_WRITE setzt LOCAL_WRITE voraus. Schlüssel und PD werden
-  vor der Platzierung geprüft. Ein Import ist eine MR, kein exklusives Gerät.
-- GPU-WR: eine zusammenhängende SGE, deren Offset in der MR ein Vielfaches von
-  4096 ist. Direkte GPU-Längen müssen Vielfache von 32 Byte sein, einschließlich
-  0; maximal 248 MiB. Ein-Byte-Transfers beschädigten im Hardwaretest Wächterbytes
-  hinter der Nutzlast. Solche Längen werden deshalb vor dem DMA abgewiesen.
-  Kurze letzte Frames mit 32-Byte-Ausrichtung sind erlaubt. RX benötigt auch
-  für einen kurzen Rest eine vollständig
-  hinterlegte 4-KiB-Seite. Eine GPU-SEND-Receive-WQE muss diese aufgerundete
-  Spanne reservieren; ihre CQ-Completion nennt die logische Länge.
-- Die RDMA-Core-Registrierung hält den Exporter fest. Zusätzliche statische
-  Attachments werden an die tatsächlichen NHI-Geräte gebunden. Nur deren
-  DMA-Adressen werden in Deskriptoren verwendet. Keine `vmap()`-Abbildung und
-  keine CPU-Synchronisation der GPU-Nutzdaten.
-- MR- und QP-Referenzen bleiben bis zum Ende der betreffenden DMA-Operation
-  bestehen. Fehler und Abbruch drainieren Deskriptoren vor der Freigabe.
-  Anwendungen müssen wie üblich MRs und Puffer bis zur Completion verfügbar
-  halten und dürfen GPU-Konsumentenfenster erst nach deren Lesezugriffen erneut
-  für DMA freigeben.
-- Normale Host-MRs funktionieren im selben Modus über begrenztes kohärentes
-  Staging. Dieser Teil kopiert Nutzdaten und ist kein direkter GPU-Pfad.
+- Native RC QPs: SEND, SEND_WITH_IMM, RDMA_WRITE and RDMA_WRITE_WITH_IMM.
+  RDMA_READ, UC, GSI, SRQ and GPU scatter/gather are not yet supported in this
+  mode. The default mode keeps its existing operations.
+- MR import: valid DMA-BUF FD, offset, length and IOVA with page alignment;
+  at most 256 MiB per exported object. Permitted access rights are LOCAL_WRITE and
+  REMOTE_WRITE; REMOTE_WRITE requires LOCAL_WRITE. Key and PD are checked before
+  placement. An import is an MR, not an exclusive device.
+- GPU WR: one contiguous SGE whose offset in the MR is a multiple of 4096. Direct
+  GPU lengths must be multiples of 32 bytes, including 0; at most 248 MiB. One-byte
+  transfers corrupted guard bytes behind the payload in the hardware test, so such
+  lengths are rejected before DMA. Short last frames with 32-byte alignment are
+  allowed. RX needs a fully backed 4 KiB page even for a short remainder. A GPU
+  SEND receive WQE must reserve this rounded-up span; its CQ completion reports
+  the logical length.
+- The RDMA core registration pins the exporter. Additional static attachments are
+  bound to the actual NHI devices. Only their DMA addresses are used in
+  descriptors. No `vmap()` mapping and no CPU synchronization of the GPU payload.
+- MR and QP references persist until the end of the DMA operation concerned. Errors
+  and aborts drain descriptors before release. As usual, applications must keep MRs
+  and buffers available until completion, and may only release GPU consumer windows
+  for DMA again after their reads.
+- Normal host MRs work in the same mode through bounded coherent staging. This part
+  copies payload and is not a direct GPU path.
 
-Die GPU-Sichtbarkeit bleibt eine Anwendungsaufgabe. Vor TX ist ein System-Release
-des Produzenten nötig; nach RX muss der GPU-Lesezugriff korrekt geordnet sein.
-Der Test übernimmt den erprobten timing-aktivierten `hipEventReleaseToSystem`
-und ungecachten RX. Das ist die bisherige Acquire-Probe für diese Hardware und
-HIP-Laufzeit, keine portable Garantie allein durch MR-Registrierung oder CQ.
+GPU visibility remains the application's job. Before TX, a system release by the
+producer is required; after RX, the GPU read must be correctly ordered. The test
+adopts the proven timing-enabled `hipEventReleaseToSystem` and uncached RX. That is
+the existing acquire probe for this hardware and HIP runtime, not a portable
+guarantee from MR registration or the CQ alone.
 
-## Platzierung, Reihenfolge und Fehler
+## Placement, ordering and errors
 
-Ein WR wird in Batches mit maximal 512 Frames je Rail zerlegt. Maximal vier
-Rails passen in einen 252-Byte-Konfigurationsdatensatz plus 4 Byte CRC; bei vier
-Rails enthält
-ein Batch höchstens 8 MiB. Domains werden über physische UUIDs und HopIDs
-zugeordnet, nicht über lokale Enumerationsnummern.
+A WR is split into batches of at most 512 frames per rail. At most four rails fit
+into a 252-byte configuration record plus 4 bytes of CRC; with four rails, a batch
+contains at most 8 MiB. Domains are matched through physical UUIDs and HopIDs, not
+through local enumeration numbers.
 
-PREPARE überprüft QP, PSN, PD, rkey, Rechte und Bereich, verbraucht die passende
-Receive-WQE genau einmal und armiert RX. Erst danach startet TX. Ein Token pro
-WR und unveränderliche Metadaten machen wiederholte Kontrollanfragen idempotent.
-Boot-Identitäten und ein Replay-Wasserzeichen verhindern alte PREPAREs nach
-einem neuen WR. Ein geänderter Remote-Bootstand auf noch bestehenden Ringen
-wird abgewiesen; beide Verbindungen müssen neu erzeugt werden.
+PREPARE checks QP, PSN, PD, rkey, access rights and range, consumes the matching
+receive WQE exactly once and arms RX. Only then does TX start. One token per WR and
+immutable metadata make repeated control requests idempotent. Boot identities and a
+replay watermark prevent old PREPAREs after a new WR. A changed remote boot state on
+rings that still exist is rejected; both connections must be recreated.
 
-Eine erfolgreiche SEND-Completion setzt lokale Deskriptor-Completions und
-bestätigte Platzierung aller Batches beim Peer voraus. Die SQ-Reihenfolge und
-signaled/unsignaled-Verarbeitung verwenden die bestehende Verbs-Queue. IMM und
-Receive-CQ erscheinen einmal für den gesamten WR. RNR wird über PREPARE und die
-vorhandenen QP-Retry-Einstellungen behandelt. Plain WRITE verbraucht keine
-Receive-WQE; der Nutzer muss die Zielpufferlebensdauer selbst koordinieren.
+A successful SEND completion requires local descriptor completions and confirmed
+placement of all batches at the peer. SQ ordering and signaled/unsignaled handling
+use the existing verbs queue. IMM and receive CQ appear once for the whole WR. RNR is
+handled through PREPARE and the existing QP retry settings. Plain WRITE consumes no
+receive WQE; the user must coordinate the destination buffer lifetime themselves.
 
-**Die bisherige Wiederholung gerahmter Verbs-Nutzdaten ist noch nicht auf rohe
-GPU-Frames übertragbar.** Fehlende, abgeschnittene oder fehlerhafte Frames werden
-als Fehler abgeschlossen; Nutzdaten werden nicht blind erneut gesendet.
-Ein letzter Marker je Rail erkennt verschobene Frames nach einem Verlust.
-Bei einem Datenfehler oder Abbruch nach dem Arming werden beide Richtungen der
-betroffenen Rails gestoppt. Beide Testmodule bzw. physischen Verbindungen müssen
-danach neu geladen werden. Saubere, vollständig abgeschlossene WRs und saubere
-QP-Wechsel verbrauchen die Rails dagegen nicht.
+**The existing retransmission of framed verbs payload does not yet carry over to raw
+GPU frames.** Missing, truncated or corrupt frames complete as errors; payload is not
+blindly sent again. A final marker per rail detects shifted frames after a loss.
+On a data error or an abort after arming, both directions of the affected rails are
+stopped. Both test modules or physical connections must then be reloaded. Clean,
+fully completed WRs and clean QP changes, by contrast, do not use up the rails.
 
-Weitere offene Qualifikation: physisches Hot-Unplug, GPU-Reset,
-IOMMU-Fehler, parallele QPs und dauerhafte Serving-Last. Der Modus ist derzeit
-für vertraute native Testpeers vorgesehen.
+Further open qualification: physical hot unplug, GPU reset, IOMMU errors, parallel
+QPs and sustained serving load. The mode is currently intended for trusted native
+test peers.
 
-### Verlust und Wiederverbindung (Stand 18. Oktober)
+### Loss and reconnection (as of October 18)
 
-Das Modulparameter-Werkzeug `dmabuf_fault` (nur Test, standardmäßig leer; kein
-debugfs, weil Lockdown beschreibbare debugfs-Dateien sperrt) verwirft,
-verzögert, dupliziert oder lässt scheitern die nächsten Meldungen eines Typs,
-die dieser Host sendet:
+The module parameter tool `dmabuf_fault` (test only, empty by default; no debugfs,
+because lockdown blocks writable debugfs files) drops, delays, duplicates or fails
+the next messages of a type that this host sends:
 `echo "commit delay ms=50 count=1 skip=20" > /sys/module/thunderbolt_ibverbs/parameters/dmabuf_fault`.
-Typen: `credit cancel commit release done`; Aktionen: `drop fail delay dup`;
-`clear` löscht alle Regeln, Lesen zeigt Regeln und Treffer. `peers` zeigt je
-Rail `gpu_stopped=1` für stillgelegte Rails, und der Kernel meldet das Stilllegen.
+Types: `credit cancel commit release done`; actions: `drop fail delay dup`;
+`clear` deletes all rules, reading shows rules and hits. `peers` shows
+`gpu_stopped=1` per rail for stopped rails, and the kernel reports the stop.
 
-Ohne Neuladen überstehen: verlorenes, verzögertes oder doppeltes DONE (STATUS),
-verlorenes, verzögertes oder doppeltes CREDIT (PREPARE übernimmt, CANCEL trägt
-alle Daten), verlorenes CANCEL (BUSY löst die Freigabe aus), RELEASE bis
-300 ms, COMMIT bis mindestens 2 s Verzögerung (STATUS antwortet BUSY, solange
-ein passender Credit auf sein COMMIT wartet), QP-Zerstörung, Prozess-Kill und
-Neuladen des Peer-Moduls bei armiertem Credit. Stillgelegt werden die Rails
-beider Seiten bei: verlorenem COMMIT, verlorenem RELEASE oder RELEASE nach über
-500 ms, CREDIT und CANCEL gemeinsam verloren, fehlgeschlagenem Senden einer
-CREDIT-, CANCEL-, COMMIT- oder RELEASE-Meldung, doppeltem COMMIT oder RELEASE,
-Prozess-Kill während einer Übertragung und Abbau eines Links. Danach müssen
-beide Module neu geladen werden; ein erneutes Binden der Dienste genügt nicht.
-Offene WRs der Gegenseite können dabei 30 s und länger ohne Fehler-CQE
-bleiben. Einzelheiten: `bench/results/2026-10-18-verbs-loss.md`.
+Survived without a reload: lost, delayed or duplicated DONE (STATUS); lost, delayed
+or duplicated CREDIT (PREPARE takes over, CANCEL carries all the data); lost CANCEL
+(BUSY triggers the release); RELEASE up to 300 ms; COMMIT with at least up to 2 s of
+delay (STATUS answers BUSY while a matching credit waits for its COMMIT); QP
+destruction, process kill and reload of the peer module with an armed credit. The
+rails on both sides are stopped on: lost COMMIT; lost RELEASE or RELEASE after more
+than 500 ms; CREDIT and CANCEL lost together; failed send of a CREDIT, CANCEL, COMMIT
+or RELEASE message; duplicated COMMIT or RELEASE; process kill during a transfer; and
+teardown of a link. Both modules must then be reloaded; rebinding the services is not
+enough. Open WRs on the other side can stay without an error CQE for 30 s and longer.
+Details: `bench/results/2026-10-18-verbs-loss.md`.
 
-## Build und Test
+## Build and test
 
-`tools/build-gpu-verbs.sh` baut `userspace/bench/tbv_gpu_verbs.hip` gegen eine
-vorhandene HIP- und Verbs-Installation. Für getrennte SDKs sind `HIPCC`,
-`HIP_PATH`, `HIP_DEVICE_LIB_PATH`, `VERBS_INCLUDE` und `VERBS_LIB` vorgesehen.
-Die Protokollprobe `tools/ci/verbs-dmabuf-smoke.c` ist in den bestehenden
-Nix-/Distributionsprüfungen enthalten.
+`tools/build-gpu-verbs.sh` builds `userspace/bench/tbv_gpu_verbs.hip` against an
+existing HIP and verbs installation. `HIPCC`, `HIP_PATH`, `HIP_DEVICE_LIB_PATH`,
+`VERBS_INCLUDE` and `VERBS_LIB` are provided for separate SDKs. The protocol probe
+`tools/ci/verbs-dmabuf-smoke.c` is part of the existing Nix/distribution checks.
 
-In einem abgestimmten Wartungsfenster auf **beiden** Hosts den geladenen
-Modulstand, Build-ID und Parameter sichern, Gerätebenutzer beenden und das
-Modul zuerst auf **beiden** Hosts entladen. Erst danach die signierten Testmodule
-laden. Ein gleichzeitiges Entladen/Laden je Host reicht nicht: ein neuer Host
-kann noch die alte Peer-Identität lernen und anschließend die neue Generation
-abweisen.
+In a coordinated maintenance window, on **both** hosts save the loaded module state,
+build ID and parameters, stop device users, and first unload the module on **both**
+hosts. Only then load the signed test modules. Unloading and loading on each host at
+the same time is not enough: a new host can still learn the old peer identity and
+then reject the new generation.
 
 ```sh
 sudo insmod kernel/thunderbolt_ibverbs.ko \
@@ -357,121 +329,110 @@ sudo insmod kernel/thunderbolt_ibverbs.ko \
   negotiate_native=1 enable_tunnels=1 register_verbs=1 \
   dmabuf_verbs=1
 
-# Rank 0, danach Rank 1; Management-IP einsetzen:
+# Rank 0, then rank 1; insert the management IP:
 tbv_gpu_verbs --device usb4_rdma0 --gid-index 1 --iterations 8 --rounds 2 --remote-error
 tbv_gpu_verbs --device usb4_rdma0 --host MANAGEMENT_IP \
   --gid-index 1 --iterations 8 --rounds 2 --remote-error
 ```
 
-Der Test prüft alle vier Operationen, acht ungültige Imports, einen gültigen
-Teilbereich, FD-Offset 4096, von GPU-VAs unabhängige IOVAs, fremde PDs,
-unausgerichtete SGEs und GPU-Längen, drei ausstehende Fenster, unsignaled WRs mit
-späterer
-signaled Completion, QP-/MR-Neuerzeugung, Byte-Längen und IMM-Reihenfolge.
-Nach GPU-Vorlesen vor RX wird jedes Nutzdatenbyte und ein 64-Byte-Wächter geprüft.
-Nur ein 16-Byte-Prüfergebnis wird zum Host übertragen. `--remote-error` prüft
-einen falschen rkey mit Fehler-CQ auch bei einem unsignaled WR; `--rnr-delay-ms 100`
-verzögert die erste Receive-Bereitschaft auf Rank 0.
+The test checks all four operations, eight invalid imports, a valid subrange, FD
+offset 4096, IOVAs independent of GPU VAs, foreign PDs, unaligned SGEs and GPU
+lengths, three outstanding windows, unsignaled WRs with a later signaled completion,
+QP/MR recreation, byte lengths and IMM ordering. After GPU pre-reads before RX, every
+payload byte and a 64-byte guard are verified. Only a 16-byte check result is
+transferred to the host. `--remote-error` checks a wrong rkey with an error CQ, also
+for an unsignaled WR; `--rnr-delay-ms 100` delays the first receive readiness on
+rank 0.
 
-`--host-mr` prüft denselben Ablauf mit Host-MRs und HIP-Kopien und dient als
-Kontrolle des alten Modus bzw. des neuen Staging-Pfads. Gemeldete Zeiten umfassen
-GPU-Erzeugung, Vorlesen, Transfer und vollständige Prüfung bei Tiefe 3; sie sind
-keine reine DMA-Zeit. `--bytes N --op WRITE_IMM` wählt eine einzelne Größe und
-Operation aus; beide Peers müssen dieselbe Auswahl verwenden.
+`--host-mr` checks the same flow with host MRs and HIP copies and serves as a control
+for the old mode or the new staging path. Reported times include GPU generation,
+pre-read, transfer and full verification at depth 3; they are not pure DMA time.
+`--bytes N --op WRITE_IMM` selects a single size and operation; both peers must use
+the same selection.
 
-`--depth 1|2|3` wählt die Anzahl der ausstehenden Fenster. `--persistent-rq`
-hält mit `--op WRITE_IMM` vier generische Zero-SGE-Receive-WQEs vor und ergänzt sie beim Abholen der
-CQ, wie Gufos Verbs-Adapter. Mit `--op SEND` oder `--op SEND_IMM` sind die
-Fenster selbst die Receive-WQEs: Nach der vollständigen Prüfung und dem
-Vorwärmen des nächsten Durchlaufs wird jedes Fenster erneut gepostet. Dieses
-Posten gibt das Fenster zurück; eine Barriere je Nachricht entfällt. Die
-Option ist ohne Fehler- oder RNR-Verzögerungsproben zu verwenden. Die Nachricht wird weiterhin
-an IMM, Länge, Reihenfolge, Nutzdaten und Wächterbytes geprüft. Eine vorzeitig
-eingetroffene nächste Barriere wird bis zur nächsten Iteration vorgemerkt.
-Die Barrieren halten die DMA-Platzierung weiterhin hinter der Freigabe des
-GPU-Konsumentenfensters.
+`--depth 1|2|3` selects the number of outstanding windows. With `--op WRITE_IMM`,
+`--persistent-rq` keeps four generic zero-SGE receive WQEs posted and replenishes them
+when reaping the CQ, like Gufo's verbs adapter. With `--op SEND` or `--op SEND_IMM`,
+the windows themselves are the receive WQEs: each window is reposted after full
+verification and pre-warming of the next pass. This posting returns the window; a
+per-message barrier is not needed. Use the option without error or RNR delay probes.
+The message is still checked for IMM, length, order, payload and guard bytes. A next
+barrier that arrives early is noted until the next iteration. The barriers still keep
+DMA placement behind the release of the GPU consumer window.
 
-`--spin-us 5000` prüft einen CQ-Abschluss zunächst aktiv und schläft erst danach
-50 µs zwischen leeren Abfragen. Gufo verwendet ebenfalls ein anfängliches
-5-ms-Spinfenster, dort für den gesamten Austausch; der Test setzt es pro
-CQ-Warteaufruf. Standard ist `--spin-us 0`. `--late-receives` reproduziert die
-frühere späte Receive-Bereitstellung und kann nicht mit `--persistent-rq`
-kombiniert werden.
+`--spin-us 5000` first polls for a CQ completion actively and only then sleeps 50 µs
+between empty polls. Gufo also uses an initial 5 ms spin window, there for the whole
+exchange; the test sets it per CQ wait call. The default is `--spin-us 0`.
+`--late-receives` reproduces the earlier late provision of receives and cannot be
+combined with `--persistent-rq`.
 
-Zusätzliche `PHASE`-Zeilen teilen die gemeldete Gesamtdauer in acht aufeinander
-folgende CPU-Zeitabschnitte: frühes RQ-Posting, GPU-Aufträge einstellen,
-TX-System-Release, Bereitschaft/Barriere, Daten-WRs einstellen, CQs abholen,
-RX-Kopie/Release und vollständige GPU-Prüfung. Die Werte sind je Nachricht
-normalisiert. `tx_release_us` enthält auch noch laufende Produzenten-Kernels;
-`gpu_submit_us` enthält im Host-MR-Modus möglicherweise synchron ausgeführte
-HIP-Kopierarbeit. Es sind keine GPU-Event-Laufzeiten einzelner Kernels.
+Additional `PHASE` lines split the reported total duration into eight consecutive CPU
+time sections: early RQ posting, submitting GPU jobs, TX system release,
+readiness/barrier, submitting data WRs, reaping CQs, RX copy/release and full GPU
+verification. The values are normalized per message. `tx_release_us` also includes
+producer kernels still running; `gpu_submit_us` may include synchronously executed
+HIP copy work in host MR mode. These are not GPU event runtimes of individual kernels.
 
-## Gufo und weitere Optimierung
+## Gufo and further optimization
 
-Detaillierte, standardmäßig deaktivierte WR-/Batch-/Rail-Tracepoints und
-optionale GPU-Event-Messungen im Test sind in
-[TRANSPORT_PROFILING.md](TRANSPORT_PROFILING.md) beschrieben. Der Capture-Runner
-erfasst abgeschlossene Diagnosefälle in einer eigenen Tracefs-Instanz; der
-Report liefert Verteilungen, eine Timeline und Verlust-/Fallback-Prüfungen.
-`TBV_PROFILING=0` bzw. das Nix-Paket `thunderbolt-ibverbs-no-profiling` entfernt
-die neue Detailinstrumentierung aus dem Modul.
+Detailed WR/batch/rail tracepoints, disabled by default, and optional GPU event
+measurements in the test are described in
+[TRANSPORT_PROFILING.md](TRANSPORT_PROFILING.md). The capture runner records completed
+diagnostic cases in a dedicated tracefs instance; the report provides distributions, a
+timeline and loss/fallback checks. `TBV_PROFILING=0` or the Nix package
+`thunderbolt-ibverbs-no-profiling` removes the new detail instrumentation from the
+module.
 
-Gufos Qwen3.8-Flash-Next-TP2-All-Reduce überträgt `rows * 2560 * sizeof(float)`.
-Der bestehende Verbs-Adapter schreibt zusätzlich 64 Byte Header am Beginn eines
-32-MiB-Fensters. Sowohl die gesamte WR-Länge als auch beliebige Zeilenzahlen
-erfüllen damit die 32-Byte-Regel; die drei Fenster beginnen auf Seitengrenzen.
-Der frühere direkte ioctl-Adapter rundet die Übertragung sogar auf 4096 Byte auf.
-Die Längen begrenzen diesen Gufo-Pfad daher nicht. Sein Verbs-Adapter verwendet
-noch Host-MRs; HIP-Allokation, DMA-BUF-Registrierung und GPU-gerechte Headerzugriffe
-müssen dort zusätzlich integriert werden.
+Gufo's Qwen3.8-Flash-Next TP2 all-reduce transfers `rows * 2560 * sizeof(float)`.
+The existing verbs adapter additionally writes a 64-byte header at the start of a
+32 MiB window. Both the total WR length and arbitrary row counts therefore satisfy
+the 32-byte rule; the three windows start on page boundaries. The earlier direct ioctl
+adapter even rounds the transfer up to 4096 bytes. The lengths therefore do not limit
+this Gufo path. Its verbs adapter still uses host MRs; HIP allocation, DMA-BUF
+registration and GPU-appropriate header accesses must also be integrated there.
 
-`dmabuf_profile=1` erfasst Aufrufzahl, gesamte Nanosekunden und Maximum je Phase
-in der Debugfs-`summary`: Queue, Job, TX-/RX-Deskriptorbau, PREPARE, TX-Posting,
-TX-Warten, STATUS, Freigabe, Verbs-Abschluss sowie getrennte PREPARE-, RNR- und
-STATUS-Wartepausen sowie `done_wait` bei aktiv gesendetem DONE. Die Werte sind kumulativ seit dem
-Laden des Moduls; Queue und Job bzw. RX-Reaping und RX-Freigabe sind überlappende
-Messungen und dürfen nicht zu einer Gesamtdauer addiert werden. Profiling ist
-standardmäßig ausgeschaltet.
+`dmabuf_profile=1` records call count, total nanoseconds and maximum per phase in the
+debugfs `summary`: queue, job, TX/RX descriptor build, PREPARE, TX posting, TX wait,
+STATUS, release, verbs completion, as well as separate PREPARE, RNR and STATUS wait
+pauses and `done_wait` with actively sent DONE. The values are cumulative since the
+module was loaded; queue and job, and RX reaping and RX release, are overlapping
+measurements and must not be added into a total. Profiling is off by default.
 
-`dmabuf_index=1` indiziert die DMA-Adressen einmal pro MR und tatsächlichem
-NHI-Gerät. Die Einträge erhalten SG-Grenzen und die zulässige Länge jedes Frames.
-`dmabuf_index=0` verwendet für A/B-Messungen die bisherige Listensuche. Die
-MR-Referenzen halten sowohl Attachments als auch Index bis zum Descriptor-Drain.
+`dmabuf_index=1` indexes the DMA addresses once per MR and actual NHI device. The
+entries preserve SG boundaries and the permitted length of each frame.
+`dmabuf_index=0` uses the previous list search for A/B measurements. The MR references
+keep both attachments and index until the descriptor drain.
 
-`dmabuf_rx_eager=1` plant beim letzten RX-DMA-Callback einen separaten Worker,
-der den Batch aufräumt und die Receive-CQ freigibt. Er arbeitet außerhalb des
-Ring-Callbacks und unter derselben RX-Sperre wie STATUS. Die Quelle bestätigt
-die Platzierung im bisherigen Steuerpfad über STATUS. Der Kontrollring sendet
-DONE; auch der XDomain-Push-Modus meldet die Platzierung aktiv. Beide schließen
-leere WRs bereits bei PREPARE ab; diese haben keinen DMA-Callback.
-`dmabuf_rx_eager=0` erlaubt den Vergleich mit dem bisherigen STATUS-Reaping.
+`dmabuf_rx_eager=1` schedules a separate worker on the last RX DMA callback, which
+cleans up the batch and releases the receive CQ. It runs outside the ring callback and
+under the same RX lock as STATUS. On the previous control path, the source confirms
+placement through STATUS. The control ring sends DONE; the XDomain push mode also
+actively reports placement. Both complete empty WRs already at PREPARE; these have no
+DMA callback. `dmabuf_rx_eager=0` allows comparison with the previous STATUS reaping.
 
-`dmabuf_parallel_post=1` übergibt Batches ab 128 Frames parallel an verschiedene
-tatsächliche NHI-Geräte. Rails desselben NHIs bleiben innerhalb einer Gruppe
-geordnet; der Worker wechselt nach jeweils höchstens 16 Deskriptoren zur
-nächsten Rail, damit ihre DMA früher überlappt. Eine eigene ungebundene Workqueue ermöglicht die parallele Arbeit;
-der Aufrufer wartet auf alle Gruppen, auch bei Fehlern, bevor Batch-Metadaten
-freigegeben werden. Kleine Batches verwenden weiterhin das sequenzielle
-Posting. `dmabuf_parallel_post=0` schaltet diesen Vergleichsmodus aus.
-Index, eager RX und paralleles Posting sind im experimentellen Modus
-standardmäßig eingeschaltet; Profiling ist ausgeschaltet.
+`dmabuf_parallel_post=1` hands batches of 128 frames or more to different actual NHI
+devices in parallel. Rails of the same NHI stay ordered within a group; the worker
+switches to the next rail after at most 16 descriptors each, so that their DMA overlaps
+earlier. A dedicated unbound workqueue enables the parallel work; the caller waits for
+all groups, including on errors, before batch metadata is released. Small batches still
+use sequential posting. `dmabuf_parallel_post=0` turns this comparison mode off. Index,
+eager RX and parallel posting are on by default in the experimental mode; profiling is
+off.
 
-Der NHI-Steuerkanal hat die vermutete große Einsparung gegenüber XDomain in
-dieser seriellen Arbeitsweise nicht bestätigt. XDomain-DONE sparte im
-Hardwarevergleich normale STATUS-Abfragen unter Erhalt aller Datenrails;
-sein Latenzvorteil blieb auf kleine Transfers beschränkt. Der gestörte
-Interruptzustand nach Link-Abbau benötigt eine eigene Untersuchung.
-Weitere Möglichkeiten sind weniger Workerwechsel und das gebündelte Einreihen von
-Deskriptoren. Vorbereitete RX-Fenster mit Credits und überlappende Batches
-bleiben weitere Möglichkeiten. Die Phasenmessung zeigt bei großen WRs
-insbesondere Kosten für TX-/RX-Posting und DMA; bei kleinen WRs fallen
-Steuerung und Synchronisation ins Gewicht.
+The NHI control channel did not confirm the suspected large saving over XDomain in this
+serial way of working. In the hardware comparison, XDomain DONE saved normal STATUS
+queries while keeping all data rails; its latency advantage was limited to small
+transfers. The disturbed interrupt state after link teardown needs its own
+investigation. Further possibilities are fewer worker switches and batched queueing of
+descriptors. Prepared RX windows with credits and overlapping batches also remain
+possibilities. For large WRs, the phase measurement shows costs for TX/RX posting and
+DMA in particular; for small WRs, control and synchronization dominate.
 
-Auf den APUs kann weniger Kopierarbeit Speicherbandbreite für die Modell-Kernels
-freigeben. Ein Nutzen für Gufo muss unter Modelllast mit Prefill-Zeit und Tokens
-pro Sekunde geprüft werden; die Transportdiagnose allein misst ihn nicht.
+On the APUs, less copy work can free memory bandwidth for the model kernels. Any
+benefit for Gufo must be checked under model load with prefill time and tokens per
+second; the transport diagnostic alone does not measure it.
 
-Die Laborskripte `tools/lab-verbs-dmabuf-module.sh` und
-`tools/lab-gpu-verbs-run.sh` bereiten reversible Modulwechsel und die vorhandene
-Nix-Laufzeit im isolierten Testverzeichnis vor. Sie ersetzen kein abgestimmtes
-Wartungsfenster und installieren weder Module noch Bibliotheken systemweit.
+The lab scripts `tools/lab-verbs-dmabuf-module.sh` and `tools/lab-gpu-verbs-run.sh`
+prepare reversible module swaps and the existing Nix runtime in the isolated test
+directory. They do not replace a coordinated maintenance window and install neither
+modules nor libraries system-wide.

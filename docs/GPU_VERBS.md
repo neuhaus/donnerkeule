@@ -251,7 +251,7 @@ Profiling-Tracepoints: `credit_grant`, `credit_received`, `credit_commit`,
   vor der Platzierung geprüft. Ein Import ist eine MR, kein exklusives Gerät.
 - GPU-WR: eine zusammenhängende SGE, deren Offset in der MR ein Vielfaches von
   4096 ist. Direkte GPU-Längen müssen Vielfache von 32 Byte sein, einschließlich
-  0; maximal 192 MiB. Ein-Byte-Transfers beschädigten im Hardwaretest Wächterbytes
+  0; maximal 248 MiB. Ein-Byte-Transfers beschädigten im Hardwaretest Wächterbytes
   hinter der Nutzlast. Solche Längen werden deshalb vor dem DMA abgewiesen.
   Kurze letzte Frames mit 32-Byte-Ausrichtung sind erlaubt. RX benötigt auch
   für einen kurzen Rest eine vollständig

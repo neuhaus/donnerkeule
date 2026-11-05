@@ -80,8 +80,9 @@ InfiniBand link (ConnectX-3, PCIe 3.0 x4), decode at 95 %.
   different rails.
 - **RNR handling**: a send waiting for a receive buffer finishes its current
   attempt before it is retried instead of failing the QP.
-- **Messages up to 192 MiB** (was 16 MiB, then 64 MiB), enough for one
-  16,384-token prefill pass of Gufo's TP2 exchange over RDMA WRITE.
+- **Messages up to 248 MiB** (was 16 MiB, then 64 MiB, then 192 MiB), enough
+  for one 16,384-token prefill pass of Gufo's TP2 exchange over RDMA WRITE and
+  for strixfold's 200 MiB transfers.
 - **Reorder timeouts are logged** with the state of the stuck message.
 
 ## Tools

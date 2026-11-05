@@ -368,6 +368,9 @@ struct tbv_rx_reorder_msg {
 	/* BLOCK_WRITE: the last fragment (and so the immediate) has arrived. */
 	bool last_seen;
 };
+/* Allocated per message; larger entries leave the slab for order-2 pages. */
+static_assert(sizeof(struct tbv_rx_reorder_msg) <= SZ_8K,
+	      "native reorder entry no longer fits kmalloc-8k");
 
 struct tbv_apple_pending_rx {
 	void *buf;

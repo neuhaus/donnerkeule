@@ -258,7 +258,7 @@ static int test_max_message_size(void)
 	struct tbv_native_data_header parsed;
 	unsigned int count;
 
-	if (TBV_NATIVE_DATA_MAX_MSG_SIZE != 192u * 1024u * 1024u ||
+	if (TBV_NATIVE_DATA_MAX_MSG_SIZE != 248u * 1024u * 1024u ||
 	    TBV_NATIVE_DATA_MAX_FRAGS > 0xffffu)
 		return 1;
 	if (tbv_native_data_build_header(buf, sizeof(buf), &hdr) !=

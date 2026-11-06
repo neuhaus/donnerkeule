@@ -196,6 +196,10 @@ struct tbv_path {
 	struct list_head tx_zcopy_inflight;
 	struct delayed_work tx_poll_work;
 	struct delayed_work rx_supp_poll_work;
+	spinlock_t rx_progress_lock;
+	struct delayed_work rx_progress_work;
+	bool rx_progress_use;
+	bool rx_progress_enabled;
 	/*
 	 * Blocks of native sends whose frames this path still has to build
 	 * (ibdev.c). A work item builds them in order, in parallel with the
@@ -885,5 +889,7 @@ int tbv_core_init(struct tbv_state *state,
 void tbv_core_exit(struct tbv_state *state);
 
 #include "verbs_dmabuf.h"
+
+void tbv_native_rx_progress_debugfs_show(struct seq_file *s);
 
 #endif

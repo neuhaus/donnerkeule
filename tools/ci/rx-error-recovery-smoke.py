@@ -14,3 +14,6 @@ helpers += '\n' + credit[0] + '\n' + functions(ibdev, ['tbv_ibdev_rx_frame'])
 helpers += '\n' + functions(path, ['tbv_path_rx_complete'])
 source = (ROOT / 'tools/ci/rx-error-gate.c').read_text().replace('#include "helpers.c"', helpers)
 run_c('rx-error-gate', source)
+source = (ROOT / 'tools/ci/send-retry-retirement.c').read_text().replace(
+    '#include "send-helper.c"', functions(ibdev, ['tbv_send_tx_done']))
+run_c('send-retry-retirement', source)

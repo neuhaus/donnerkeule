@@ -3451,28 +3451,42 @@ static void tbv_read_tx_done(void *ctx, int status)
 	tbv_read_ctx_put(read);
 }
 
+/* Account for DMA completions and abandoned build frames identically. The
+ * last retirement must start the ACK/retry timer even when no DMA callback
+ * remains to observe tx_pending reaching zero. Caller holds a send reference. */
+static void tbv_send_retire_frames(struct tbv_send_ctx *send, u32 frames,
+				   int status)
+{
+	struct tbv_qp *tqp = send->tqp;
+	unsigned long flags;
+	bool tx_drained;
+
+	if (!send->retryable)
+		return;
+	spin_lock_irqsave(&tqp->lock, flags);
+	tx_drained = atomic_sub_and_test(frames, &send->tx_pending);
+	if (tx_drained) {
+		send->retrying = false;
+		if (!status && send->pending && !send->rnr_waiting) {
+			tbv_send_mark_queued(send, jiffies);
+			tbv_qp_schedule_timeout_locked(tqp);
+		}
+	}
+	spin_unlock_irqrestore(&tqp->lock, flags);
+}
+
 static void tbv_send_tx_done(void *ctx, int status)
 {
 	struct tbv_send_ctx *send = ctx;
 	struct tbv_qp *tqp = send->tqp;
 
-	if (send->retryable) {
-		unsigned long flags;
-		bool tx_drained;
+	tbv_send_retire_frames(send, 1, status);
 
-		spin_lock_irqsave(&tqp->lock, flags);
-		tx_drained = atomic_dec_and_test(&send->tx_pending);
-		if (tx_drained) {
-			send->retrying = false;
-			if (!status && send->pending && !send->rnr_waiting) {
-				tbv_send_mark_queued(send, jiffies);
-				tbv_qp_schedule_timeout_locked(tqp);
-			}
-		}
-		spin_unlock_irqrestore(&tqp->lock, flags);
-	}
-
-	if (!status) {
+	/* Completion retires ownership before canceling surplus retry frames.
+	 * Their callbacks still retire DMA references, but must not complete
+	 * the send a second time.
+	 */
+	if (!status || tbv_send_is_completed(send)) {
 		tbv_send_ctx_put(send);
 		return;
 	}
@@ -4745,7 +4759,7 @@ static void tbv_native_send_run_build_job(struct tbv_send_build_job *job)
 	 * send is then retransmitted after its timeout, or flushed.
 	 */
 	if (unsent)
-		atomic_sub(unsent, &ctx->tx_pending);
+		tbv_send_retire_frames(ctx, unsent, 0);
 }
 
 void tbv_ibdev_path_build_work(struct work_struct *work)
@@ -4814,7 +4828,7 @@ static void tbv_native_send_queue_blocks(struct tbv_send_ctx *ctx,
 								 end - first);
 
 			if (unsent)
-				atomic_sub(unsent, &ctx->tx_pending);
+				tbv_send_retire_frames(ctx, unsent, 0);
 			tbv_release_path_refs(&paths[p], 1);
 			continue;
 		}

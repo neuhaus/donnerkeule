@@ -239,6 +239,7 @@ struct tbv_path {
 	u32 rx_raw_remaining;
 	u64 rx_raw_base;
 	bool rx_raw_pending;
+	bool rx_raw_poisoned;
 	bool tx_poll_enabled;
 	bool rx_supp_poll_enabled;
 	bool tx_scheduling;
@@ -565,6 +566,10 @@ struct tbv_state {
 	atomic64_t data_rx_repost_failed;
 	atomic64_t data_rx_lost;
 	atomic64_t data_rx_bad_frame;
+	atomic64_t data_rx_crc_error;
+	atomic64_t data_rx_overrun;
+	atomic64_t data_rx_raw_poisoned;
+	atomic64_t data_rx_raw_poison_drop;
 	atomic64_t data_rx_bad_header;
 	atomic64_t data_rx_bad_header_parse;
 	atomic64_t data_rx_bad_header_len;

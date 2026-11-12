@@ -78,6 +78,7 @@ module_param(dmabuf_reuse_buffers, bool, 0444);
 MODULE_PARM_DESC(dmabuf_reuse_buffers,
 	"Cache one drained descriptor/staging batch per rail and direction (opt-in)");
 static atomic64_t dmabuf_cache_hits, dmabuf_cache_misses, dmabuf_cache_bytes;
+static atomic64_t dmabuf_cancel_unposted, dmabuf_cancel_drained, dmabuf_cancel_stopped;
 static atomic64_t dmabuf_host_tx_frames, dmabuf_host_rx_frames;
 
 static bool dmabuf_profile;
@@ -191,6 +192,9 @@ void tbv_dmabuf_debugfs_show(struct seq_file *s)
 	seq_printf(s, "dmabuf_profile: %u\n", dmabuf_profile);
 	seq_printf(s, "dmabuf_reuse_buffers: %u\n", dmabuf_reuse_buffers);
 	seq_printf(s, "dmabuf_cache_hits: %lld\n", atomic64_read(&dmabuf_cache_hits));
+	seq_printf(s, "dmabuf_cancel_unposted: %lld\n", atomic64_read(&dmabuf_cancel_unposted));
+	seq_printf(s, "dmabuf_cancel_drained: %lld\n", atomic64_read(&dmabuf_cancel_drained));
+	seq_printf(s, "dmabuf_cancel_stopped: %lld\n", atomic64_read(&dmabuf_cancel_stopped));
 	seq_printf(s, "dmabuf_cache_misses: %lld\n", atomic64_read(&dmabuf_cache_misses));
 	seq_printf(s, "dmabuf_cache_bytes: %lld\n", atomic64_read(&dmabuf_cache_bytes));
 	seq_printf(s, "dmabuf_host_tx_frames: %lld\n", atomic64_read(&dmabuf_host_tx_frames));
@@ -299,6 +303,8 @@ struct tbv_dmabuf_batch {
 	u32 count;
 	bool submitted;
 	bool tx;
+	/* tbv_dmabuf_cancel() was called for this batch's WR (tx_lock). */
+	bool canceled;
 	struct tbv_perf_id perf;
 	u64 perf_dma_done_ns;
 };
@@ -820,18 +826,58 @@ static void tbv_dmabuf_batch_drop(struct tbv_dmabuf_batch *batch, bool abort)
 	tbv_perf_span(&perf, "batch_release", perf_start, abort ? -ECANCELED : 0, 0);
 }
 
+static void tbv_dmabuf_batch_kick(struct tbv_dmabuf_batch *batch, bool tx);
+
+/* How long a canceled WR's posted frames may take to leave the rings. */
+#define TBV_DMABUF_CANCEL_DRAIN_MS 200
+
+/* Waits for a posted batch's DMA without stopping its rings. True only if all
+ * of its frames completed without error. */
+static bool tbv_dmabuf_batch_drain(struct tbv_dmabuf_batch *batch,
+				   unsigned long deadline)
+{
+	while (atomic_read(&batch->pending) && !atomic_read(&batch->error) &&
+	       time_before(jiffies, deadline))
+		if (!wait_event_timeout(batch->wait, !atomic_read(&batch->pending) ||
+				atomic_read(&batch->error), msecs_to_jiffies(10)))
+			tbv_dmabuf_batch_kick(batch, batch->tx);
+	return !atomic_read(&batch->pending) && !atomic_read(&batch->error);
+}
+
+/*
+ * QP destroy/flush: the WR's frames must stop using its buffer before this
+ * returns. A batch that is not posted yet never will be. Posted frames go to a
+ * receiver armed for exactly them, so they are let finish: stopping the rings
+ * mid-batch quarantines both rails until the module is reloaded. Only a batch
+ * that does not drain is stopped.
+ */
 void tbv_dmabuf_cancel(void *context)
 {
+	struct tbv_dmabuf_batch *batch;
 	u32 i;
 
 	if (!dmabuf_verbs)
 		return;
 	mutex_lock(&dmabuf_engine.tx_lock);
-	if (dmabuf_engine.active_context == context && dmabuf_engine.active_batch)
-		for (i = 0; i < dmabuf_engine.active_batch->count; i++) {
-			WRITE_ONCE(dmabuf_engine.active_batch->lanes[i].rail->dmabuf_quarantine_reason, 2);
-			tbv_dmabuf_stop_rail(dmabuf_engine.active_batch->lanes[i].rail);
-		}
+	batch = dmabuf_engine.active_batch;
+	if (dmabuf_engine.active_context != context || !batch)
+		goto out;
+	WRITE_ONCE(batch->canceled, true);
+	if (!batch->submitted) {
+		atomic64_inc(&dmabuf_cancel_unposted);
+		goto out;
+	}
+	if (tbv_dmabuf_batch_drain(batch, jiffies +
+				   msecs_to_jiffies(TBV_DMABUF_CANCEL_DRAIN_MS))) {
+		atomic64_inc(&dmabuf_cancel_drained);
+		goto out;
+	}
+	atomic64_inc(&dmabuf_cancel_stopped);
+	for (i = 0; i < batch->count; i++) {
+		WRITE_ONCE(batch->lanes[i].rail->dmabuf_quarantine_reason, 2);
+		tbv_dmabuf_stop_rail(batch->lanes[i].rail);
+	}
+out:
 	mutex_unlock(&dmabuf_engine.tx_lock);
 }
 
@@ -2647,7 +2693,7 @@ prepared:
 		u64 perf_start, batch_start = tbv_perf_clock();
 		unsigned long deadline = jiffies + job->timeout * (job->retries + 1);
 		u32 rnr = 0, failures = 0, credit = 0;
-		bool remote_armed = false;
+		bool remote_armed = false, canceled = false;
 
 		if (job->posted) {
 			/* tbv_dmabuf_tx_direct() sent COMMIT and posted the frames. */
@@ -2707,7 +2753,8 @@ prepared:
 				remote_armed = true;
 				break;
 			}
-			if (!job->buffer.alive(job->buffer.context)) {
+			if (READ_ONCE(batch->canceled) ||
+			    !job->buffer.alive(job->buffer.context)) {
 				ret = -ECANCELED;
 				break;
 			}
@@ -2780,7 +2827,7 @@ prepared:
 		start = tbv_dmabuf_clock();
 		perf_start = tbv_perf_clock();
 		mutex_lock(&dmabuf_engine.tx_lock);
-		ret = job->buffer.alive(job->buffer.context) ?
+		ret = !batch->canceled && job->buffer.alive(job->buffer.context) ?
 			tbv_dmabuf_batch_post(batch, true) : -ECANCELED;
 		mutex_unlock(&dmabuf_engine.tx_lock);
 		tbv_dmabuf_record(TBV_DMABUF_TX_POST, start);
@@ -2790,6 +2837,19 @@ posted:
 			start = tbv_dmabuf_clock();
 			perf_start = tbv_perf_clock();
 			ret = tbv_dmabuf_batch_wait(batch, &job->buffer, deadline);
+			if (ret == -ECANCELED) {
+				/* The WR is gone but its frames are posted to an
+				 * armed receiver: finish the batch, as far as
+				 * DONE, instead of aborting it and its rails. */
+				unsigned long drain = jiffies +
+					msecs_to_jiffies(TBV_DMABUF_CANCEL_DRAIN_MS);
+
+				canceled = true;
+				if (time_before(drain, deadline))
+					deadline = drain;
+				ret = tbv_dmabuf_batch_drain(batch, deadline) ? 0 :
+					atomic_read(&batch->error) ?: -ETIMEDOUT;
+			}
 			tbv_dmabuf_record(TBV_DMABUF_TX_WAIT, start);
 			tbv_perf_wire(&m, true, "tx_dma_wait", perf_start, ret, 0);
 		}
@@ -2798,9 +2858,16 @@ posted:
 		m.op = TBV_DMABUF_STATUS;
 		start = tbv_dmabuf_clock();
 		for (;;) {
-			if (!job->buffer.alive(job->buffer.context)) {
-				ret = -ECANCELED;
-				break;
+			/* Every frame is sent: a WR canceled now only waits,
+			 * briefly, for the receiver to place them. */
+			if (!canceled && (READ_ONCE(batch->canceled) ||
+					  !job->buffer.alive(job->buffer.context))) {
+				unsigned long drain = jiffies +
+					msecs_to_jiffies(TBV_DMABUF_CANCEL_DRAIN_MS);
+
+				canceled = true;
+				if (time_before(drain, deadline))
+					deadline = drain;
 			}
 			if (pending) {
 				/* DONE is registered before PREPARE, so a notification
@@ -2851,8 +2918,12 @@ drop:
 		tbv_dmabuf_batch_drop(batch, !!ret);
 		mutex_unlock(&dmabuf_engine.tx_lock);
 		tbv_perf_wire(&m, true, "batch", batch_start, ret, 0);
+		if (canceled)
+			atomic64_inc(ret ? &dmabuf_cancel_stopped : &dmabuf_cancel_drained);
 		if (ret)
 			return ret;
+		if (canceled)
+			return -ECANCELED;
 		offset += m.bytes;
 	} while (offset < job->hdr.length);
 	return 0;
@@ -2930,7 +3001,7 @@ static void tbv_dmabuf_tx_direct(struct tbv_dmabuf_job *job)
 	if (!ret) {
 		dma_wmb();
 		mutex_lock(&dmabuf_engine.tx_lock);
-		ret = job->buffer.alive(job->buffer.context) ?
+		ret = !batch->canceled && job->buffer.alive(job->buffer.context) ?
 			tbv_dmabuf_batch_post(batch, true) : -ECANCELED;
 		mutex_unlock(&dmabuf_engine.tx_lock);
 	}

@@ -203,7 +203,7 @@ struct tbv_path {
 	 */
 	spinlock_t build_lock;
 	struct list_head build_jobs;
-	struct work_struct build_work;
+	struct delayed_work build_work;
 	atomic_t tx_inflight;
 	atomic64_t data_tx_enqueued;
 	atomic64_t data_tx_posted;
@@ -539,6 +539,7 @@ struct tbv_state {
 	atomic64_t data_wr_zcopy_fallback_unsafe_sge;
 	atomic64_t data_wr_block_split;
 	atomic64_t data_wr_block_async;
+	atomic64_t data_wr_block_deferred;
 	atomic64_t data_wr_copy_error;
 	atomic64_t data_wr_path_send;
 	atomic64_t data_wr_path_send_error;
@@ -707,6 +708,12 @@ typedef int (*tbv_path_next_page_fn)(void *ctx, struct page **page,
 				     void **done_ctx);
 #define TBV_PATH_SEND_CONTROL	BIT(0)
 #define TBV_PATH_SEND_DEFER	BIT(1)
+/*
+ * The caller reserved queue room with tbv_path_reserve_data() and this frame
+ * uses one frame of it. Without it a frame never takes another sender's
+ * reservation.
+ */
+#define TBV_PATH_SEND_RESERVED	BIT(2)
 extern const uuid_t tbv_native_service_uuid;
 
 int tbv_config_parse(struct tbv_config *cfg, const char *compat,

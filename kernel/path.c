@@ -605,7 +605,7 @@ void tbv_path_init(struct tbv_path *path,
 	path->rail = rail;
 	spin_lock_init(&path->build_lock);
 	INIT_LIST_HEAD(&path->build_jobs);
-	INIT_WORK(&path->build_work, tbv_ibdev_path_build_work);
+	INIT_DELAYED_WORK(&path->build_work, tbv_ibdev_path_build_work);
 	spin_lock_init(&path->tx_lock);
 	INIT_LIST_HEAD(&path->tx_free);
 	INIT_LIST_HEAD(&path->tx_control_free);
@@ -1594,8 +1594,9 @@ static int tbv_path_enqueue_control(struct tbv_path *path, const void *data,
 
 static int tbv_path_enqueue_data(struct tbv_path *path,
 				 struct tbv_tx_packet *packet,
-				 bool defer_schedule)
+				 unsigned int send_flags)
 {
+	bool defer_schedule = send_flags & TBV_PATH_SEND_DEFER;
 	unsigned long flags;
 
 	spin_lock_irqsave(&path->tx_lock, flags);
@@ -1603,7 +1604,13 @@ static int tbv_path_enqueue_data(struct tbv_path *path,
 		spin_unlock_irqrestore(&path->tx_lock, flags);
 		return -ENOTCONN;
 	}
-	if (path->tx_data_reserved) {
+	/*
+	 * Only a frame sent under its sender's reservation may use reserved
+	 * room: a block being built has reserved its frames and enqueues them
+	 * together, so an unreserved frame (an RX credit, an ACK) taking one
+	 * would make that enqueue fail.
+	 */
+	if ((send_flags & TBV_PATH_SEND_RESERVED) && path->tx_data_reserved) {
 		path->tx_data_reserved--;
 	} else if (path->tx_data_queued >= path->tx_data_queue_limit) {
 		spin_unlock_irqrestore(&path->tx_lock, flags);
@@ -2062,10 +2069,11 @@ int tbv_path_send(struct tbv_path *path, const void *data, u32 len,
 
 	if (!len || len > TBV_DATA_FRAME_SIZE)
 		return -EINVAL;
-	if (send_flags & ~(TBV_PATH_SEND_CONTROL | TBV_PATH_SEND_DEFER))
+	if (send_flags & ~(TBV_PATH_SEND_CONTROL | TBV_PATH_SEND_DEFER |
+			   TBV_PATH_SEND_RESERVED))
 		return -EINVAL;
 	if (send_flags & TBV_PATH_SEND_CONTROL) {
-		if (send_flags & TBV_PATH_SEND_DEFER)
+		if (send_flags & (TBV_PATH_SEND_DEFER | TBV_PATH_SEND_RESERVED))
 			return -EINVAL;
 		return tbv_path_enqueue_control(path, data, len, done, done_ctx);
 	}
@@ -2074,8 +2082,7 @@ int tbv_path_send(struct tbv_path *path, const void *data, u32 len,
 	if (!packet)
 		return -ENOMEM;
 
-	ret = tbv_path_enqueue_data(path, packet,
-				    send_flags & TBV_PATH_SEND_DEFER);
+	ret = tbv_path_enqueue_data(path, packet, send_flags);
 	if (ret) {
 		kfree(packet->buf);
 		kfree(packet);
@@ -2104,7 +2111,8 @@ int tbv_path_send_marked_owned(struct tbv_path *path, void *data, u32 len,
 	if (!data)
 		return -EINVAL;
 	if (!len || len > TBV_DATA_FRAME_SIZE ||
-	    (send_flags & ~(TBV_PATH_SEND_CONTROL | TBV_PATH_SEND_DEFER)) ||
+	    (send_flags & ~(TBV_PATH_SEND_CONTROL | TBV_PATH_SEND_DEFER |
+			    TBV_PATH_SEND_RESERVED)) ||
 	    (send_flags & TBV_PATH_SEND_CONTROL)) {
 		kfree(data);
 		return -EINVAL;
@@ -2119,8 +2127,7 @@ int tbv_path_send_marked_owned(struct tbv_path *path, void *data, u32 len,
 	packet->sof = sof;
 	packet->eof = eof;
 
-	ret = tbv_path_enqueue_data(path, packet,
-				    send_flags & TBV_PATH_SEND_DEFER);
+	ret = tbv_path_enqueue_data(path, packet, send_flags);
 	if (ret) {
 		kfree(packet->buf);
 		kfree(packet);
@@ -2141,7 +2148,8 @@ int tbv_path_send_marked_fill(struct tbv_path *path, u32 len,
 	if (!fill)
 		return -EINVAL;
 	if (!len || len > TBV_DATA_FRAME_SIZE ||
-	    (send_flags & ~(TBV_PATH_SEND_CONTROL | TBV_PATH_SEND_DEFER)) ||
+	    (send_flags & ~(TBV_PATH_SEND_CONTROL | TBV_PATH_SEND_DEFER |
+			    TBV_PATH_SEND_RESERVED)) ||
 	    (send_flags & TBV_PATH_SEND_CONTROL))
 		return -EINVAL;
 
@@ -2173,8 +2181,7 @@ int tbv_path_send_marked_fill(struct tbv_path *path, u32 len,
 
 	packet->sof = sof;
 	packet->eof = eof;
-	ret = tbv_path_enqueue_data(path, packet,
-				    send_flags & TBV_PATH_SEND_DEFER);
+	ret = tbv_path_enqueue_data(path, packet, send_flags);
 	if (ret) {
 		packet->done = NULL;
 		packet->done_ctx = NULL;
@@ -2620,7 +2627,7 @@ void tbv_path_destroy(struct tbv_path *path, struct tb_xdomain *xd)
 			     path->state == TBV_PATH_RING_STARTED;
 
 	/* Build jobs hold rail references, so none is left by now. */
-	cancel_work_sync(&path->build_work);
+	cancel_delayed_work_sync(&path->build_work);
 	cancel_delayed_work_sync(&path->tx_poll_work);
 	cancel_delayed_work_sync(&path->rx_supp_poll_work);
 

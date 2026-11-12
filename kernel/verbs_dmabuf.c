@@ -50,11 +50,13 @@ MODULE_PARM_DESC(dmabuf_poll_control,
 
 /*
  * Opt-in for the AMD 158d/158e NHI ring ABI. The tb_ring layout is checked at
- * build time; it was qualified on Linux 7.2.6 (Ubuntu, Framework Desktop) and
- * 7.2.11 (Fedora, Sixunited AXB35 / Bosgame M5). Other kernels compile it out.
+ * build time; it was qualified on Linux 7.2.6 (Ubuntu, Framework Desktop),
+ * 7.2.11 (Fedora, Sixunited AXB35 / Bosgame M5) and 7.3.3 (Fedora, Bosgame
+ * M5). 7.3 adds tb_ring.lock_key at the end, which is empty without lockdep.
+ * Other kernels compile it out.
  */
 #if defined(CONFIG_X86_64) && LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0) && \
-	LINUX_VERSION_CODE < KERNEL_VERSION(7, 3, 0)
+	LINUX_VERSION_CODE < KERNEL_VERSION(7, 4, 0)
 #define TBV_BULK_NHI_ABI 1
 #endif
 static bool dmabuf_batch_doorbell;

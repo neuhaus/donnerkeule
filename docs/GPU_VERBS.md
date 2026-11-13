@@ -282,6 +282,13 @@ blindly sent again. A final marker per rail detects shifted frames after a loss.
 On a data error or an abort after arming, both directions of the affected rails are
 stopped. Both test modules or physical connections must then be reloaded. Clean,
 fully completed WRs and clean QP changes, by contrast, do not use up the rails.
+Neither does a WR canceled by QP destruction, a QP error or a killed process
+(since November 13): a batch the receiver has not armed is never posted, and an
+armed one is still posted and allowed to land, on both sides, for up to 200 ms
+before the rails are stopped after all. The summary counts these cases
+(`dmabuf_cancel_unposted`, `dmabuf_cancel_drained`, `dmabuf_cancel_stopped` on
+the sender, `dmabuf_cancel_rx_drained`, `dmabuf_cancel_rx_stopped` on the
+receiver).
 
 Further open qualification: physical hot unplug, GPU reset, IOMMU errors, parallel
 QPs and sustained serving load. The mode is currently intended for trusted native
@@ -304,8 +311,9 @@ delay (STATUS answers BUSY while a matching credit waits for its COMMIT); QP
 destruction, process kill and reload of the peer module with an armed credit. The
 rails on both sides are stopped on: lost COMMIT; lost RELEASE or RELEASE after more
 than 500 ms; CREDIT and CANCEL lost together; failed send of a CREDIT, CANCEL, COMMIT
-or RELEASE message; duplicated COMMIT or RELEASE; process kill during a transfer; and
-teardown of a link. Both modules must then be reloaded; rebinding the services is not
+or RELEASE message; duplicated COMMIT or RELEASE; and teardown of a link. A process
+kill or QP destruction during a transfer stopped them too until November 13 (see
+above; `bench/results/2026-10-18-verbs-loss.md` predates that). Both modules must then be reloaded; rebinding the services is not
 enough. Open WRs on the other side can stay without an error CQE for 30 s and longer.
 Details: `bench/results/2026-10-18-verbs-loss.md`.
 

@@ -482,8 +482,9 @@ Measured this way (Qwen3.8 Flash-Next Q4, 25.8k-token prompt), prefill ran
 at 1824 tok/s against 1892 over FDR InfiniBand, with identical output.
 
 `/sys/kernel/debug/thunderbolt_ibverbs/summary` counts striped WRITEs
-(`data_wr_block_split`) and frames lost on a path (`data_rx_lost`; their
-credits are refunded and retransmission recovers the message).
+(`data_wr_block_split`), frames lost on a path (`data_rx_lost`; their
+credits are refunded and retransmission recovers the message) and how often
+a block waited for room in a full path queue (`data_wr_block_deferred`).
 `peers` shows each rail's credits and, on `tx_pump`, why queued frames are
 not being sent. What this branch changes and measures:
 [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md).

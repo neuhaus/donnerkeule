@@ -76,6 +76,15 @@ InfiniBand link (ConnectX-3, PCIe 3.0 x4), decode at 95 %.
   carry a per-path sequence number in two spare header bytes (ignored by
   older peers); the receiver refunds the credits of any gap, and
   retransmission recovers the messages. `data_rx_lost` counts them.
+- **A full path queue delays a block instead of dropping it.** Each path
+  queues at most 65,536 frames; 128 outstanding 8 MiB WRITEs need about twice
+  that. The build work used to retire the frames it could not queue as if
+  sent, so the WRITE timed out and later ones waited behind it in PSN order:
+  8 MiB WRITEs fell to 2–8 Gbit/s while 4 MiB still ran at full speed. The
+  block now keeps its progress and is retried a jiffy later
+  (`data_wr_block_deferred`), and frames sent without a reservation (ACKs,
+  RX credits) no longer use up room another sender reserved. 8 and 64 MiB
+  WRITEs run at 36–43 Gbit/s with no retransmissions.
 - **Ordered send completions** when ACKs for consecutive sends race on
   different rails.
 - **RNR handling**: a send waiting for a receive buffer finishes its current

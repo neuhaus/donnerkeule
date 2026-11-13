@@ -4,7 +4,8 @@ One module build and one set of options for two-cable TP=2 between two hosts
 on either board:
 
 - **Sixunited AXB35** (Bosgame M5, GMKtec EVO-X2, FEVM FA-EX9 and others),
-  tested as fuzzy/misty: AXB35-02, Fedora 43, kernel 7.2.11.
+  tested as fuzzy/misty: AXB35-02, Fedora 43, kernel 7.2.11 and since
+  November 2026 7.3.3.
 - **Framework Desktop** mainboard, tested by the
   [donnerkeule fork of lfthht](https://github.com/lfthht/donnerkeule/tree/codex/framework-desktop):
   FRANMFCP06 A6, BIOS 03.04, Ubuntu 26.04, kernel 7.2.6.
@@ -27,11 +28,24 @@ What differs is outside the driver:
   match the physical link at both ends by its XDomain UUIDs, as described in
   the fork's documentation.
 - **Kernel and distribution.** The batched doorbell (below) writes NHI ring
-  descriptors directly and needs the `struct tb_ring` layout of Linux 7.2.x on
-  x86_64. That layout is checked at build time; it is identical in Ubuntu's
-  7.2.6 and Fedora's 7.2.11. On other kernels the helper is compiled out and
-  loading with `dmabuf_batch_doorbell=1` fails with `EOPNOTSUPP`; leave it off
-  there.
+  descriptors directly and needs the `struct tb_ring` layout of Linux 7.2.x or
+  7.3.x on x86_64. That layout is checked at build time; it is identical in
+  Ubuntu's 7.2.6, Fedora's 7.2.11 and Fedora's 7.3.3. On other kernels
+  (including 7.4 until its layout has been checked) the helper is compiled out
+  and loading with `dmabuf_batch_doorbell=1` fails with `EOPNOTSUPP`; leave it
+  off there.
+- **In-tree `thunderbolt` driver.** Two driver bugs affect this setup (both
+  verified on 7.3.3, the XDomain one also seen on 7.2.x). Their fixes are not
+  yet in mainline, so the AXB35 hosts run a rebuilt `thunderbolt.ko` with both
+  patches. On these AMD NHIs `ring_msix()` clears
+  a ring's interrupt status with a posted write that can land after the next
+  completion and erase it: the frame then waits for some later interrupt,
+  which shows up as ~75 ms stalls (often exactly one QP ACK timeout) and, in
+  native mode, as retransmits. The fix reads the register back after the
+  clear. Separately, `tb_xdomain_match()` can match a fire-and-forget XDomain
+  response, so its request is freed twice (`refcount_t: underflow` in
+  `tb_cfg_request_work`, a use-after-free). The stock driver runs this
+  module, but with those stalls and that use-after-free.
 - **Secure Boot.** The Fedora hosts run lockdown; DKMS signs the module with
   the enrolled MOK. Writable debugfs and dynamic debug control are then
   unavailable, so use module parameters (`dyndbg=...`) instead.

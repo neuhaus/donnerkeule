@@ -15,6 +15,7 @@ body = functions(source, (
     "tbv_dmabuf_credit_work", "tbv_dmabuf_recv_posted", "tbv_dmabuf_credit_commit",
     "tbv_dmabuf_spec_prepare", "tbv_dmabuf_rx_cached", "tbv_dmabuf_rx_prepare",
     "tbv_dmabuf_control_request", "tbv_dmabuf_disconnect",
+    "tbv_dmabuf_rx_cancel_due", "tbv_dmabuf_rx_watch",
 ))
 shim = r"""
 #include <assert.h>
@@ -38,9 +39,15 @@ struct list_head { struct list_head *next; };
 #define READ_ONCE(x) (x)
 #define time_after_eq(a, b) ((long)((a) - (b)) >= 0)
 #define wake_up_all(q) ((void)(q))
-/* Waits observe the state at the call; tests stage asynchronous events. */
+/* Waits observe the state after wait_hook, which stages what happens meanwhile. */
+static void (*wait_hook)(void);
+static void run_wait_hook(void) { void (*hook)(void) = wait_hook; wait_hook = NULL; if (hook) hook(); }
 static long mock_wait_timeout(bool condition) { return condition ? 1 : 0; }
-#define wait_event_timeout(q, cond, t) ((void)(q), (void)(t), mock_wait_timeout(cond))
+#define wait_event_timeout(q, cond, t) ((void)(q), (void)(t), run_wait_hook(), mock_wait_timeout(cond))
+typedef long long atomic64_t;
+#define atomic64_inc(p) (++*(p))
+#define TBV_DMABUF_CANCEL_DRAIN_MS 200
+static atomic64_t dmabuf_cancel_rx_drained, dmabuf_cancel_rx_stopped;
 #define queue_work(wq, work) mock_queue_work()
 #define pr_warn_ratelimited(...) ((void)0)
 static unsigned long jiffies;
@@ -163,8 +170,10 @@ static struct tbv_rail *tbv_dmabuf_find_lane(struct tbv_state *s,
     return &rail;
 }
 static void tbv_rail_put(struct tbv_rail *r) { r->refs--; }
+static unsigned int stopping_drops;
 static void tbv_dmabuf_batch_drop(struct tbv_dmabuf_batch *batch, bool stop) {
     drops++;
+    if (stop && batch->count) stopping_drops++;
     for (u32 i = 0; i < batch->count; i++) tbv_rail_put(batch->lanes[i].rail);
     memset(batch, 0, sizeof(*batch));
 }
@@ -177,11 +186,18 @@ static int tbv_dmabuf_batch_alloc(struct tbv_dmabuf_batch *batch,
     return alloc_result;
 }
 static int tbv_dmabuf_batch_post(struct tbv_dmabuf_batch *b, bool tx) { return post_result; }
+static unsigned int kicks;
+static void tbv_dmabuf_batch_kick(struct tbv_dmabuf_batch *b, bool tx) { kicks++; }
+static int system_unbound_wq __attribute__((unused));
 static int tbv_dmabuf_rx_reap(void);
 """
 # The wrapper only records timings; tests exercise the actual reap implementation.
 body = body.replace("static int tbv_dmabuf_rx_prepare", "static int tbv_dmabuf_rx_reap(void) { return tbv_dmabuf_rx_reap_impl(); }\n\nstatic int tbv_dmabuf_rx_prepare")
 cases = r"""
+static void complete_armed_batch(void) {
+    dmabuf_engine.rx.batch.pending = 0;
+    assert(tbv_dmabuf_rx_reap_impl() == TBV_DMABUF_DONE);
+}
 int main(void) {
     struct tbv_state state = {0};
     struct tbv_peer peer = { .state = &state, .remote_host_known = true };
@@ -228,6 +244,39 @@ int main(void) {
         assert(finishes == before + 1 && dmabuf_engine.rx.state == TBV_DMABUF_RX_CACHED);
         assert(ctrl.refs == 1 && !rail.refs && ref_gets == ref_puts);
         tbv_dmabuf_cancel_recv(&rail); assert(finishes == before + 1);
+    }
+    assert(dmabuf_cancel_rx_stopped == 1 && !dmabuf_cancel_rx_drained);
+    // QP destroy with an armed batch: the sender was told READY and posts, so
+    // the frames land during the wait and the batch completes normally.
+    m.token++;
+    assert(tbv_dmabuf_control_request(&peer, &ctrl, &m) == TBV_DMABUF_READY);
+    {
+        unsigned int before = finishes, stops_before = stopping_drops;
+        wait_hook = complete_armed_batch;
+        tbv_dmabuf_cancel_recv(&rail);
+        assert(finishes == before + 1 && notified == TBV_DMABUF_DONE);
+        assert(stopping_drops == stops_before && dmabuf_cancel_rx_drained == 1);
+        assert(dmabuf_engine.rx.state == TBV_DMABUF_RX_CACHED && !rail.refs);
+    }
+    // The watchdog gives a dead WR's armed batch the same grace, then cancels.
+    for (int lands = 1; lands >= 0; lands--) {
+        m.token++;
+        assert(tbv_dmabuf_control_request(&peer, &ctrl, &m) == TBV_DMABUF_READY);
+        unsigned int before = finishes, stops_before = stopping_drops;
+        alive = false;
+        tbv_dmabuf_rx_watch(NULL);
+        assert(finishes == before && dmabuf_engine.rx.state == TBV_DMABUF_RX_ARMED);
+        if (lands) {
+            dmabuf_engine.rx.batch.pending = 0;
+            tbv_dmabuf_rx_watch(NULL);
+            assert(notified == TBV_DMABUF_DONE && stopping_drops == stops_before);
+        } else {
+            jiffies += TBV_DMABUF_CANCEL_DRAIN_MS;
+            tbv_dmabuf_rx_watch(NULL);
+            assert(notified == -ECANCELED && stopping_drops == stops_before + 1);
+        }
+        assert(finishes == before + 1 && dmabuf_engine.rx.state == TBV_DMABUF_RX_CACHED);
+        alive = true;
     }
     // Allocation/post failures finish a begun WR; missing lanes never begin one.
     m.token++; alloc_result = -ENOMEM;

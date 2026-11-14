@@ -26,8 +26,7 @@
         portableLocalKernelPatches = portableLocalThunderboltKernelPatches;
       };
       linuxSystems = [ "x86_64-linux" ];
-      darwinSystems = [ "aarch64-darwin" ];
-      systems = linuxSystems ++ darwinSystems;
+      systems = linuxSystems;
       forAllSystems = f: lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
       forLinuxSystems = f: lib.genAttrs linuxSystems (system: f (import nixpkgs { inherit system; }));
       mkThunderboltKernel =
@@ -260,21 +259,14 @@
         pkgs:
         let
           isLinux = pkgs.stdenv.hostPlatform.isLinux;
-          isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           rdmaCoreUsb4 = mkRdmaCoreUsb4 pkgs;
-          packageArgs =
-            lib.optionalAttrs isLinux { rdma-core-usb4 = rdmaCoreUsb4; }
-            // lib.optionalAttrs isDarwin { inherit (pkgs) apple-sdk_26; };
+          packageArgs = lib.optionalAttrs isLinux { rdma-core-usb4 = rdmaCoreUsb4; };
           perftest = pkgs.callPackage ./nix/perftest.nix packageArgs;
           benchTools = pkgs.callPackage ./nix/bench-tools.nix packageArgs;
           perftestBench =
             if isLinux then
               import ./lib/bench/perftest.nix {
                 inherit lib pkgs perftest;
-                # cross-system reference: the wrapper bakes the darwin
-                # perftest store path so the runner can pick the right
-                # binary per host without an explicit CLI override.
-                perftestDarwin = self.packages.aarch64-darwin.perftest or null;
                 rdma-core-usb4 = rdmaCoreUsb4;
                 runnerSrc = ./userspace/bench/tbv_perftest_runner.py;
                 benchConfig = import ./lib/bench { inherit lib; };
@@ -437,11 +429,8 @@
         final: prev:
         let
           isLinux = prev.stdenv.hostPlatform.isLinux;
-          isDarwin = prev.stdenv.hostPlatform.isDarwin;
           packageArgs = lib.optionalAttrs isLinux {
             rdma-core-usb4 = final.rdma-core-usb4;
-          } // lib.optionalAttrs isDarwin {
-            inherit (final) apple-sdk_26;
           };
         in
         {

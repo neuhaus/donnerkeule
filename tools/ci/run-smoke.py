@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 C_TESTS = {
     "verbs-dmabuf": [],
     "proto": [],
+    "read-resp": [],
     "reliability": ["proto/reliability.c"],
     "identity": ["proto/identity.c"],
     "config": ["proto/config.c", "proto/identity.c"],

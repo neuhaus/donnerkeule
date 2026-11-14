@@ -120,8 +120,20 @@ python3 bench/plot_perftest.py sweep.csv --out docs/img   # needs matplotlib
 `--gid` selects the RoCE v2 GID for `usb4_rdma` (1 with an IPv4 address on
 `roce_netdev`) and 0 for InfiniBand. Both hosts need perftest; the server is
 reached by `ssh <server>` without a password. A case that fails leaves its
-cells empty. The `--max-size` caps skip what currently fails in native mode:
-`ib_read_bw` above 512 KiB fails on this driver without striping as well, and
+cells empty. The `--max-size` caps skip what currently fails in native mode.
+
+Above 512 KiB perftest keeps 128 READs outstanding, which at the default ack
+timeout could not drain before the requester's one-shot timer expired. The
+requester timer is fixed: it now restarts whenever a response fragment is
+taken. The responder side is unchanged: it still resends the whole response
+every 100 ms (`TBV_READ_RESP_RETRY_MS`) until the requester ACKs it, up to 3
+times, so a very long drain can still see spurious resends and a dropped
+response. The `ib_read_bw` cap is therefore deliberately left at 524288 until
+the larger sizes are requalified on hardware; `max_rd_atomic` is still not
+enforced either, so the number of outstanding READs remains whatever the send
+queue holds.
+
+`ib_read_bw` above 512 KiB failed on this driver without striping as well, and
 `ib_send_bw` above 512 KiB fails with `native_write_striping` (which enables
 fragment striping for SENDs); the `_lat` tests passed at 1 MiB on 25 October.
 DMA-BUF verbs mode (`dmabuf_verbs=1`) has no RDMA READ, and its SENDs pass at

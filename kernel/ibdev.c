@@ -35,6 +35,7 @@
 
 #include "../proto/apple_tx.h"
 #include "../proto/native_data.h"
+#include "../proto/read_resp.h"
 #include "../proto/reliability.h"
 #include "tbv.h"
 #include "verbs_internal.h"
@@ -575,6 +576,7 @@ struct tbv_read_ctx {
 	bool completed;
 	bool ready;
 	bool sq_counted;
+	bool retry_sent;
 	struct list_head resp_frags;
 	struct tbv_read_segment segs[TBV_IBDEV_MAX_SGE];
 };
@@ -1351,6 +1353,24 @@ static void tbv_qp_arm_read_timeout(struct tbv_qp *tqp,
 
 	spin_lock_irqsave(&tqp->lock, flags);
 	if (!list_empty(&read->node) && !read->queued_jiffies) {
+		read->queued_jiffies = jiffies;
+		tbv_qp_schedule_timeout_locked(tqp);
+	}
+	spin_unlock_irqrestore(&tqp->lock, flags);
+}
+
+/*
+ * A READ that is taking new bytes is making progress, so its requester
+ * timeout starts again. Armed once, one ack timeout has to cover the whole
+ * transfer, and a large READ that is draining normally still expires.
+ */
+static void tbv_qp_restart_read_timeout(struct tbv_qp *tqp,
+					struct tbv_read_ctx *read)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&tqp->lock, flags);
+	if (!list_empty(&read->node) && read->queued_jiffies) {
 		read->queued_jiffies = jiffies;
 		tbv_qp_schedule_timeout_locked(tqp);
 	}
@@ -9263,9 +9283,11 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 					 struct tbv_path *rx_path)
 {
 	struct tbv_read_ctx *read;
+	enum tbv_read_resp_action action;
 	u32 next_received;
 	u32 frag_idx;
 	u32 frag_count;
+	u32 taken;
 	bool last = hdr->flags & TBV_NATIVE_DATA_F_LAST;
 	int ret = 0;
 
@@ -9296,13 +9318,15 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 		ret = -EINVAL;
 		goto complete_ack;
 	}
-	if (hdr->frag_offset < read->received) {
+	action = tbv_read_resp_classify(read->received, read->retry_sent,
+					hdr->frag_offset);
+	if (action == TBV_READ_RESP_DUPLICATE) {
 		atomic64_inc(&state->data_rx_read_resp_duplicate);
 		mutex_unlock(&read->data_lock);
 		tbv_read_ctx_put(read);
 		return;
 	}
-	if (hdr->frag_offset != read->received) {
+	if (action != TBV_READ_RESP_IN_ORDER) {
 		atomic64_inc(&state->data_rx_read_resp_gap);
 		ret = tbv_read_resp_store_frag_locked(read, hdr->frag_offset,
 						      payload, hdr->length);
@@ -9310,9 +9334,12 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 			atomic64_inc(&state->data_rx_read_resp_bad_header);
 			goto complete_ack;
 		}
-		tbv_send_read_ack_on_path(tqp, rx_path, hdr->src_qp,
-					  hdr->dest_qp, hdr->psn,
-					  TBV_NATIVE_READ_ACK_RETRY);
+		if (action == TBV_READ_RESP_GAP_RETRY) {
+			read->retry_sent = true;
+			tbv_send_read_ack_on_path(tqp, rx_path, hdr->src_qp,
+						  hdr->dest_qp, hdr->psn,
+						  TBV_NATIVE_READ_ACK_RETRY);
+		}
 		mutex_unlock(&read->data_lock);
 		tbv_read_ctx_put(read);
 		return;
@@ -9325,11 +9352,16 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 		goto complete_ack;
 	}
 
+	taken = read->received;
 	read->received = next_received;
 	ret = tbv_read_resp_drain_frags_locked(read);
 	if (ret) {
 		atomic64_inc(&state->data_rx_read_resp_copy_error);
 		goto complete_ack;
+	}
+	if (tbv_read_resp_advanced(taken, read->received)) {
+		read->retry_sent = false;
+		tbv_qp_restart_read_timeout(tqp, read);
 	}
 	if (read->received != read->total_len) {
 		mutex_unlock(&read->data_lock);

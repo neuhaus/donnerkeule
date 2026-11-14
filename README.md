@@ -107,7 +107,7 @@ Latest measurements: [25 October donnerkeule merge on the Sixunited AXB35](bench
 (opt-in batched doorbell and direct host DMA: 16 MiB host WRITE 20 → 38–41 Gb/s,
 Gufo unchanged within noise). Latest GPU-RDMA checkpoint:
 [16 October measurements, current status and next steps](bench/results/2026-10-16-verbs-parity.md).
-Earlier [architecture checkpoint](docs/GPU_RDMA_STATUS_2026-10-04.md) is retained for context.
+Earlier [architecture checkpoint](docs/history/GPU_RDMA_STATUS_2026-10-04.md) is retained for context.
 
 - The opt-in [DMA-BUF verbs implementation](docs/GPU_VERBS.md) uses standard
   MR registration, SEND/WRITE operations and CQs with direct NHI descriptors.

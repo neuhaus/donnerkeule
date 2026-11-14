@@ -21,6 +21,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run the smoke suite
+        run: CC=gcc python3 tools/ci/run-smoke.py
+
   build:
     name: build (${{ matrix.name }})
     runs-on: ubuntu-latest

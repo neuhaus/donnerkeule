@@ -43,7 +43,7 @@ At 10,304 B, the measured cycle latency dropped by 16.6%; large transfers stayed
 practically level. After a forced link teardown the data remained correct, but
 normal interrupts and latency only returned after an ACPI NHI reset.
 The measurements from October 2–4 in
-[GPU_RDMA_STATUS_2026-10-04.md](GPU_RDMA_STATUS_2026-10-04.md) concern the
+[GPU_RDMA_STATUS_2026-10-04.md](history/GPU_RDMA_STATUS_2026-10-04.md) concern the
 earlier exclusive ioctl path and must not be read as measurements of this
 integration. The default mode remains `dmabuf_verbs=0`.
 

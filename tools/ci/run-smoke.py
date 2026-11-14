@@ -12,6 +12,7 @@ C_TESTS = {
     "verbs-dmabuf": [],
     "proto": [],
     "read-resp": [],
+    "ctrl-txn": [],
     "reliability": ["proto/reliability.c"],
     "identity": ["proto/identity.c"],
     "config": ["proto/config.c", "proto/identity.c"],
@@ -27,6 +28,6 @@ with tempfile.TemporaryDirectory(prefix="tbv-smoke-") as directory:
         ], check=True)
         subprocess.run([binary], check=True)
 for name in ("source-layout", "provider-patches", "verbs-control-state", "verbs-control-lifetime",
-             "verbs-dma-wait", "verbs-post", "verbs-rx-state", "host-credit-peek", "configfs-state", "bench-helpers", "profiling", "framework-desktop", "rx-error-recovery",
+             "verbs-dma-wait", "verbs-post", "verbs-rx-state", "host-credit-peek", "bench-helpers", "profiling", "framework-desktop", "rx-error-recovery",
              "native-build-backpressure", "verbs-dmabuf-cancel"):
     subprocess.run([sys.executable, str(ROOT / f"tools/ci/{name}-smoke.py")], check=True)

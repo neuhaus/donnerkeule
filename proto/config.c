@@ -149,3 +149,26 @@ int tbv_cfg_link_deactivate(struct tbv_cfg_link *link)
 	link->state = TBV_CFG_SEALED;
 	return 0;
 }
+
+int tbv_cfg_link_activate_published(struct tbv_cfg_link *link,
+				    tbv_cfg_publish_fn publish, void *ctx)
+{
+	int ret = tbv_cfg_link_activate(link);
+
+	if (ret)
+		return ret;
+
+	ret = publish(ctx);
+	if (ret)
+		tbv_cfg_link_deactivate(link);
+	return ret;
+}
+
+void tbv_cfg_link_release(struct tbv_cfg_link *link,
+			  tbv_cfg_unpublish_fn unpublish, void *ctx)
+{
+	if (link->state != TBV_CFG_ACTIVE)
+		return;
+	unpublish(ctx);
+	tbv_cfg_link_deactivate(link);
+}

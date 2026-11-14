@@ -388,33 +388,37 @@ unlock:
 	return ret ? ret : count;
 }
 
+struct tbv_cfgfs_publish_ctx {
+	struct tbv_cfgfs_link *link;
+	const char *name;
+	enum tbv_backend_type backend;
+};
+
+static int tbv_cfgfs_publish_link(void *ctx)
+{
+	struct tbv_cfgfs_publish_ctx *pub = ctx;
+
+	return tbv_link_activate_config(pub->link->state, pub->name,
+					pub->backend, &pub->link->cfg);
+}
+
 static ssize_t activate_store(struct config_item *item, const char *buf,
 			      size_t count)
 {
 	struct tbv_cfgfs_link *link = tbv_cfgfs_to_link(item);
-	enum tbv_backend_type backend;
+	struct tbv_cfgfs_publish_ctx pub;
 	int ret;
 
 	if (!sysfs_streq(buf, "1"))
 		return -EINVAL;
 
 	mutex_lock(&link->lock);
-	backend = link->cfg.backend == TBV_CFG_BACKEND_NATIVE ?
-		  TBV_BACKEND_NATIVE : TBV_BACKEND_APPLE;
-	if (link->cfg.state != TBV_CFG_SEALED) {
-		ret = -EINVAL;
-		goto unlock;
-	}
-
-	ret = tbv_cfg_link_activate(&link->cfg);
-	if (ret)
-		goto unlock;
-
-	ret = tbv_link_activate_config(link->state, config_item_name(item),
-				       backend, &link->cfg);
-	if (ret)
-		tbv_cfg_link_deactivate(&link->cfg);
-unlock:
+	pub.link = link;
+	pub.name = config_item_name(item);
+	pub.backend = link->cfg.backend == TBV_CFG_BACKEND_NATIVE ?
+		      TBV_BACKEND_NATIVE : TBV_BACKEND_APPLE;
+	ret = tbv_cfg_link_activate_published(&link->cfg,
+					      tbv_cfgfs_publish_link, &pub);
 	mutex_unlock(&link->lock);
 	trace_tbv_cfgfs_link_op(config_item_name(item), "activate", ret);
 	return ret ? ret : (ssize_t)count;
@@ -492,14 +496,18 @@ static struct configfs_attribute *tbv_cfgfs_link_attrs[] = {
 	NULL,
 };
 
+static void tbv_cfgfs_unpublish_link(void *ctx)
+{
+	struct tbv_cfgfs_link *link = ctx;
+
+	tbv_link_deactivate_config(link->state, link->cfg.link_id);
+}
+
 static void tbv_cfgfs_link_release(struct config_item *item)
 {
 	struct tbv_cfgfs_link *link = tbv_cfgfs_to_link(item);
 
-	if (link->cfg.state == TBV_CFG_ACTIVE) {
-		tbv_link_deactivate_config(link->state, link->cfg.link_id);
-		tbv_cfg_link_deactivate(&link->cfg);
-	}
+	tbv_cfg_link_release(&link->cfg, tbv_cfgfs_unpublish_link, link);
 	mutex_destroy(&link->lock);
 	kfree(link);
 }

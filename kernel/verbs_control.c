@@ -17,6 +17,7 @@
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
+#include "../proto/ctrl_txn.h"
 #include "tbv.h"
 #include "verbs_control.h"
 #include "perf.h"
@@ -54,10 +55,8 @@ struct tbv_ctrl_pending {
 	struct tbv_control *ctrl;
 	struct tbv_dmabuf_wire key;
 	struct completion reply, done;
-	u16 expected;
-	int status, done_status;
+	struct tbv_ctrl_txn txn;
 	u32 reply_credit;
-	bool replied, completed;
 };
 
 enum tbv_ctrl_counter {
@@ -117,14 +116,18 @@ bool tbv_control_push_enabled(void)
 
 bool tbv_control_xdomain_required(const struct tbv_peer *peer)
 {
-	return tbv_control_push_enabled() && READ_ONCE(peer->remote_push_done) &&
-		!(tbv_control_enabled() && READ_ONCE(peer->remote_control_ring));
+	return tbv_ctrl_need_xdomain(tbv_control_enabled(),
+				     READ_ONCE(peer->remote_control_ring),
+				     tbv_control_push_enabled(),
+				     READ_ONCE(peer->remote_push_done));
 }
 
 bool tbv_control_required(const struct tbv_peer *peer)
 {
-	return (tbv_control_enabled() && READ_ONCE(peer->remote_control_ring)) ||
-		tbv_control_xdomain_required(peer);
+	return tbv_ctrl_need(tbv_control_enabled(),
+			     READ_ONCE(peer->remote_control_ring),
+			     tbv_control_push_enabled(),
+			     READ_ONCE(peer->remote_push_done));
 }
 
 bool tbv_control_ready(const struct tbv_peer *peer)
@@ -233,8 +236,7 @@ static void tbv_ctrl_reply(struct tbv_control *ctrl, const struct tbv_dmabuf_wir
 	unsigned long flags;
 	bool found = false;
 
-	if (m->op == (TBV_DMABUF_COMPLETE | TBV_DMABUF_REPLY) &&
-	    m->status != TBV_DMABUF_DONE && m->status >= 0) {
+	if (tbv_ctrl_done_malformed(m)) {
 		atomic64_inc(&ctrl->counters[CTRL_BAD]);
 		/* A malformed notification does not establish remote placement.
 		 * Let the normal STATUS recovery resolve it without poisoning a
@@ -246,19 +248,19 @@ static void tbv_ctrl_reply(struct tbv_control *ctrl, const struct tbv_dmabuf_wir
 		if (!tbv_dmabuf_wire_same(&p->key, m, true))
 			continue;
 		found = true;
-		if (m->op == (TBV_DMABUF_COMPLETE | TBV_DMABUF_REPLY)) {
+		if (m->op == (TBV_DMABUF_COMPLETE | TBV_DMABUF_REPLY))
 			atomic64_inc(&ctrl->counters[CTRL_DONE_RX]);
-			if (!p->completed) {
-				p->done_status = m->status;
-				p->completed = true;
-				tbv_perf_wire_mark(m, true, "done_received", m->status, 0);
-				complete_all(&p->done);
-			}
-		} else if (m->op == (p->expected | TBV_DMABUF_REPLY) && !p->replied) {
-			p->status = m->status;
-			p->replied = true;
+		switch (tbv_ctrl_txn_apply(&p->txn, m)) {
+		case TBV_CTRL_APPLY_DONE:
+			tbv_perf_wire_mark(m, true, "done_received", m->status, 0);
+			complete_all(&p->done);
+			break;
+		case TBV_CTRL_APPLY_REPLY:
 			tbv_perf_wire_mark(m, true, "control_reply", m->status, m->op);
 			complete_all(&p->reply);
+			break;
+		default:
+			break;
 		}
 		break;
 	}
@@ -885,8 +887,8 @@ int tbv_control_exchange(struct tbv_ctrl_pending *p,
 
 	spin_lock_irqsave(&ctrl->lock, flags);
 	reinit_completion(&p->reply);
-	p->expected = m->op;
-	p->replied = false;
+	p->txn.expected = m->op;
+	p->txn.replied = false;
 	p->reply_credit = 0;
 	ret = ctrl->failure;
 	spin_unlock_irqrestore(&ctrl->lock, flags);
@@ -908,7 +910,7 @@ int tbv_control_exchange(struct tbv_ctrl_pending *p,
 		return -ETIMEDOUT;
 	}
 	spin_lock_irqsave(&ctrl->lock, flags);
-	ret = ctrl->failure ?: (p->replied ? p->status : -ENOTCONN);
+	ret = ctrl->failure ?: (p->txn.replied ? p->txn.status : -ENOTCONN);
 	spin_unlock_irqrestore(&ctrl->lock, flags);
 	tbv_perf_wire(m, true, "control_reply_wait", start, ret, m->op);
 	return ret;
@@ -933,7 +935,7 @@ int tbv_control_wait_done(struct tbv_ctrl_pending *p, u32 timeout_ms)
 
 	wait_for_completion_timeout(&p->done, msecs_to_jiffies(timeout_ms));
 	spin_lock_irqsave(&p->ctrl->lock, flags);
-	ret = p->ctrl->failure ?: (p->completed ? p->done_status : TBV_DMABUF_BUSY);
+	ret = tbv_ctrl_txn_result(&p->txn, p->ctrl->failure);
 	spin_unlock_irqrestore(&p->ctrl->lock, flags);
 	tbv_perf_wire(&p->key, true, "done_wait", start, ret, 0);
 	return ret;

@@ -170,6 +170,116 @@ static int test_external_names_are_canonical(void)
 	return 0;
 }
 
+static int publish_calls;
+static int publish_result;
+static int publish_saw_state;
+
+static int record_publish(void *ctx)
+{
+	struct tbv_cfg_link *link = ctx;
+
+	publish_calls++;
+	publish_saw_state = link->state;
+	return publish_result;
+}
+
+/*
+ * configfs activation used to be checked by extracting activate_store() out
+ * of kernel/configfs.c and compiling it against a shim. The ordering it cared
+ * about lives here instead, so this links the real object.
+ */
+static int test_publication_orders_and_rolls_back(void)
+{
+	struct tbv_cfg_link link;
+	struct tbv_cfg_link fresh;
+
+	tbv_cfg_link_init(&link, 8);
+	CHECK(configure_canonical(&link, TBV_CFG_BACKEND_NATIVE) == 0);
+	CHECK(tbv_cfg_link_seal(&link) == 0);
+
+	/*
+	 * Publication sees an active link, and a failure rolls it back to
+	 * sealed rather than leaving it half published.
+	 */
+	publish_calls = 0;
+	publish_result = -ENOMEM;
+	publish_saw_state = -1;
+	CHECK(tbv_cfg_link_activate_published(&link, record_publish,
+					      &link) == -ENOMEM);
+	CHECK(publish_calls == 1);
+	CHECK(publish_saw_state == TBV_CFG_ACTIVE);
+	CHECK(link.state == TBV_CFG_SEALED);
+
+	/* The rollback left it activatable again. */
+	publish_calls = 0;
+	publish_result = 0;
+	CHECK(tbv_cfg_link_activate_published(&link, record_publish,
+					      &link) == 0);
+	CHECK(publish_calls == 1);
+	CHECK(link.state == TBV_CFG_ACTIVE);
+
+	/* Activating twice is refused and does not publish again. */
+	publish_calls = 0;
+	CHECK(tbv_cfg_link_activate_published(&link, record_publish,
+					      &link) == -EINVAL);
+	CHECK(publish_calls == 0);
+	CHECK(link.state == TBV_CFG_ACTIVE);
+
+	/* A link that was never sealed is refused before publication. */
+	tbv_cfg_link_init(&fresh, 9);
+	publish_calls = 0;
+	publish_result = 0;
+	CHECK(tbv_cfg_link_activate_published(&fresh, record_publish,
+					      &fresh) == -EINVAL);
+	CHECK(publish_calls == 0);
+	CHECK(fresh.state == TBV_CFG_EMPTY);
+
+	return 0;
+}
+
+static int unpublish_calls;
+static int unpublish_saw_state;
+
+static void record_unpublish(void *ctx)
+{
+	struct tbv_cfg_link *link = ctx;
+
+	unpublish_calls++;
+	unpublish_saw_state = link->state;
+}
+
+static int test_release_unpublishes_only_active(void)
+{
+	struct tbv_cfg_link link;
+	struct tbv_cfg_link fresh;
+
+	tbv_cfg_link_init(&link, 10);
+	CHECK(configure_canonical(&link, TBV_CFG_BACKEND_NATIVE) == 0);
+	CHECK(tbv_cfg_link_seal(&link) == 0);
+	publish_result = 0;
+	CHECK(tbv_cfg_link_activate_published(&link, record_publish,
+					      &link) == 0);
+
+	unpublish_calls = 0;
+	unpublish_saw_state = -1;
+	tbv_cfg_link_release(&link, record_unpublish, &link);
+	CHECK(unpublish_calls == 1);
+	CHECK(unpublish_saw_state == TBV_CFG_ACTIVE);
+	CHECK(link.state == TBV_CFG_SEALED);
+
+	unpublish_calls = 0;
+	tbv_cfg_link_release(&link, record_unpublish, &link);
+	CHECK(unpublish_calls == 0);
+	CHECK(link.state == TBV_CFG_SEALED);
+
+	tbv_cfg_link_init(&fresh, 11);
+	tbv_cfg_link_release(&fresh, record_unpublish, &fresh);
+	CHECK(unpublish_calls == 0);
+	CHECK(fresh.state == TBV_CFG_EMPTY);
+
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(test_canonical_native_activates() == 0);
@@ -179,6 +289,8 @@ int main(void)
 	CHECK(test_nccl_workaround_mismatch_cannot_seal() == 0);
 	CHECK(test_sealed_links_are_immutable() == 0);
 	CHECK(test_external_names_are_canonical() == 0);
+	CHECK(test_publication_orders_and_rolls_back() == 0);
+	CHECK(test_release_unpublishes_only_active() == 0);
 
 	puts("config smoke OK");
 	return 0;

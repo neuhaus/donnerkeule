@@ -40,8 +40,7 @@ Options:
 Examples:
   tools/tbv-target-module.sh router --nixos-config ../nixos-config
   tools/tbv-target-module.sh router --copy
-  tools/tbv-target-module.sh strix-1 --booted-kernel --reload --options 'profile=linux_perf ...'
-  tools/tbv-target-module.sh router --reload --options 'profile=mac_compat ...'
+  tools/tbv-target-module.sh strix-1 --booted-kernel --reload --options 'lanes=2 ...'
 EOF
 }
 
@@ -203,38 +202,6 @@ find_booted_kernel_dev() {
 	printf '%s\n' "${dev_outputs[0]}"
 }
 
-module_option_value() {
-	local name=$1
-	local default=$2
-	local opt opt_name opt_value
-
-	read -r -a opt_args <<< "$module_options"
-	for opt in "${opt_args[@]}"; do
-		opt_name="${opt%%=*}"
-		[[ "$opt_name" == "$name" ]] || continue
-		if [[ "$opt" == *=* ]]; then
-			opt_value="${opt#*=}"
-		else
-			opt_value=1
-		fi
-		printf '%s\n' "$opt_value"
-		return 0
-	done
-
-	printf '%s\n' "$default"
-}
-
-option_truthy() {
-	case "$1" in
-	1|y|Y|yes|YES|true|TRUE|on|ON)
-		return 0
-		;;
-	*)
-		return 1
-		;;
-	esac
-}
-
 validate_module_options() {
 	local module=$1
 	local opt opt_name
@@ -249,29 +216,6 @@ validate_module_options() {
 			die "--options includes unknown module parameter '$opt_name' for $module"
 		fi
 	done
-}
-
-validate_kernel_feature_options() {
-	local kernel_dev=$1
-	local tbnet_identity
-	local bind_services
-	local -a header_roots=()
-
-	tbnet_identity="$(module_option_value tbnet_identity "")"
-	bind_services="$(module_option_value bind_services "0")"
-
-	[[ -d "$kernel_dev/include" ]] && header_roots+=("$kernel_dev/include")
-	[[ -d "$kernel_dev/lib/modules" ]] && header_roots+=("$kernel_dev/lib/modules")
-	if [[ "${#header_roots[@]}" -eq 0 ]]; then
-		header_roots+=("$kernel_dev")
-	fi
-
-	if [[ "$tbnet_identity" == "minimal_packet" ]] &&
-	   option_truthy "$bind_services" &&
-	   ! grep -Rqs "TB_PROTOCOL_HANDLER_UNREGISTER_DRAINS" \
-		"${header_roots[@]}"; then
-		die "tbnet_identity=minimal_packet with bind_services requires target kernel headers to define TB_PROTOCOL_HANDLER_UNREGISTER_DRAINS"
-	fi
 }
 
 printf '==> Target: %s via ssh %s\n' "$config_attr" "$ssh_host"
@@ -357,7 +301,6 @@ if [[ "$module_uname" != "$remote_uname" ]]; then
 fi
 
 validate_module_options "$module"
-validate_kernel_feature_options "$kernel_dev"
 
 if [[ "$copy" == 1 ]]; then
 	copy_args=(copy --to "$copy_to" "$module_pkg")
@@ -398,27 +341,14 @@ module_uname="$(modinfo -F vermagic "$TBV_MODULE" | awk '{print $1}')"
 	fail "module vermagic kernel '$module_uname' does not match uname '$actual_uname'"
 
 read -r -a opt_args <<< "$TBV_OPTIONS"
-tbnet_identity=""
-tbnet_identity_tbnet="thunderbolt0"
 roce_netdev=""
 for opt in "${opt_args[@]}"; do
 	case "$opt" in
-	tbnet_identity=*)
-		tbnet_identity="${opt#tbnet_identity=}"
-		;;
-	tbnet_identity_tbnet=*)
-		tbnet_identity_tbnet="${opt#tbnet_identity_tbnet=}"
-		;;
 	roce_netdev=*)
 		roce_netdev="${opt#roce_netdev=}"
 		;;
 	esac
 done
-
-if [[ "$tbnet_identity" == "minimal_packet" ]] &&
-   grep -q '^thunderbolt_net ' /proc/modules; then
-	fail "tbnet_identity=minimal_packet requires thunderbolt_net to be absent before reload; reboot with thunderbolt_net blacklisted or unload it before using --reload"
-fi
 
 modprobe ib_uverbs || true
 
@@ -447,24 +377,6 @@ for dep in $(modinfo -F depends "$TBV_MODULE" | tr ',' ' ' || true); do
 	modprobe "$dep"
 done
 
-case "$tbnet_identity" in
-stock|stock_proxy)
-	modprobe thunderbolt_net
-	for _ in $(seq 1 20); do
-		if ip link show "$tbnet_identity_tbnet" >/dev/null 2>&1; then
-			ip link set "$tbnet_identity_tbnet" up || true
-			break
-		fi
-		sleep 0.5
-	done
-	;;
-minimal_packet)
-	if grep -q '^thunderbolt_net ' /proc/modules; then
-		fail "tbnet_identity=minimal_packet requires thunderbolt_net to be absent at load time"
-	fi
-	;;
-esac
-
 insmod "$TBV_MODULE" "${opt_args[@]}"
 
 if [[ "$TBV_WAIT_SECS" != 0 ]]; then
@@ -475,7 +387,7 @@ grep -q '^thunderbolt_ibverbs ' /proc/modules ||
 	fail "module is not loaded after insmod"
 
 if [[ -r /sys/kernel/debug/thunderbolt_ibverbs/summary ]]; then
-	awk -F': *' '$1 == "profile" || $1 == "verbs_registered" || $1 == "tbnet_identity_proxy_ipv4" || $1 == "data_rx_bad_frame" || $1 == "data_cq_overflow" { print }' \
+	awk -F': *' '$1 == "profile" || $1 == "verbs_registered" || $1 == "data_rx_bad_frame" || $1 == "data_cq_overflow" { print }' \
 		/sys/kernel/debug/thunderbolt_ibverbs/summary
 fi
 if [[ -n "$roce_netdev" ]]; then

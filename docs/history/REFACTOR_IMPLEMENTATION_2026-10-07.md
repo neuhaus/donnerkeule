@@ -5,7 +5,7 @@ war der bereits geänderte Arbeitsbaum einschließlich der DONE- und Polling-Arb
 Gufo war nicht Teil dieses Auftrags. Die Umsetzung verwendet eigene Quellkopien
 im vorhandenen `nixbox`-Container auf fuzzy; es wurde kein Hardwaretest durchgeführt.
 
-Die später freigegebene [Hardwareprüfung vom 8. Oktober](../bench/results/2026-10-08-hardware.md)
+Die später freigegebene [Hardwareprüfung vom 8. Oktober](../../bench/results/2026-10-08-hardware.md)
 prüfte den aufgeräumten Stand mit Host- und GPU-MRs sowie DONE-Fehlerfällen.
 Dieser Bericht dokumentiert weiterhin die ursprüngliche Build- und Refactoringrunde.
 

@@ -4,6 +4,7 @@
 
 #include "../proto/verbs_dmabuf.h"
 
+struct ib_device;
 struct tbv_dmabuf_mr;
 struct tbv_mr;
 struct seq_file;

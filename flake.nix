@@ -12,6 +12,7 @@
     }:
     let
       lib = nixpkgs.lib;
+      tbvVersion = import ./nix/version.nix;
       portableLocalThunderboltKernelPatches = import ./kernel-workflow/patches/local-portable.nix;
       portableThunderboltKernelPatches = import ./kernel-workflow/patches/portable.nix;
       portableThunderboltKernelPatchesFor = import ./kernel-workflow/patches/portable-for-kernel.nix;
@@ -26,8 +27,7 @@
         portableLocalKernelPatches = portableLocalThunderboltKernelPatches;
       };
       linuxSystems = [ "x86_64-linux" ];
-      darwinSystems = [ "aarch64-darwin" ];
-      systems = linuxSystems ++ darwinSystems;
+      systems = linuxSystems;
       forAllSystems = f: lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
       forLinuxSystems = f: lib.genAttrs linuxSystems (system: f (import nixpkgs { inherit system; }));
       mkThunderboltKernel =
@@ -61,7 +61,7 @@
         pkgs:
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-ibverbs-script-syntax";
-          version = "0.4.0";
+          version = tbvVersion;
           src = ./.;
 
           nativeBuildInputs = [
@@ -104,7 +104,7 @@
         in
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-portable-kernel-patches-apply-check";
-          version = "0.4.0";
+          version = tbvVersion;
           src = kernel.src;
 
           nativeBuildInputs = [ pkgs.git ];
@@ -138,7 +138,7 @@
         pkgs:
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-ibverbs-proto-smoke";
-          version = "0.4.0";
+          version = tbvVersion;
           src = ./.;
 
           nativeBuildInputs = [ pkgs.python3 pkgs.git ];
@@ -189,7 +189,7 @@
             machine.start()
             machine.wait_for_unit("multi-user.target")
             machine.succeed("test $(uname -r) = '${kernelPackages.kernel.modDirVersion}'")
-            machine.succeed("modprobe thunderbolt_ibverbs profile=linux_perf bind_services=1 register_verbs=1")
+            machine.succeed("modprobe thunderbolt_ibverbs bind_services=1 register_verbs=1")
             machine.succeed("grep '^native_control: ${expectedNativeControl}$' /sys/kernel/debug/thunderbolt_ibverbs/summary")
             machine.succeed("grep '^thunderbolt_ibverbs ' /proc/modules")
             machine.succeed("modinfo thunderbolt_ibverbs")
@@ -227,7 +227,7 @@
         pkgs:
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-ibverbs-verbs-smoke-build";
-          version = "0.4.0";
+          version = tbvVersion;
           src = ./.;
 
           nativeBuildInputs = [ pkgs.pkg-config ];
@@ -260,21 +260,14 @@
         pkgs:
         let
           isLinux = pkgs.stdenv.hostPlatform.isLinux;
-          isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           rdmaCoreUsb4 = mkRdmaCoreUsb4 pkgs;
-          packageArgs =
-            lib.optionalAttrs isLinux { rdma-core-usb4 = rdmaCoreUsb4; }
-            // lib.optionalAttrs isDarwin { inherit (pkgs) apple-sdk_26; };
+          packageArgs = lib.optionalAttrs isLinux { rdma-core-usb4 = rdmaCoreUsb4; };
           perftest = pkgs.callPackage ./nix/perftest.nix packageArgs;
           benchTools = pkgs.callPackage ./nix/bench-tools.nix packageArgs;
           perftestBench =
             if isLinux then
               import ./lib/bench/perftest.nix {
                 inherit lib pkgs perftest;
-                # cross-system reference: the wrapper bakes the darwin
-                # perftest store path so the runner can pick the right
-                # binary per host without an explicit CLI override.
-                perftestDarwin = self.packages.aarch64-darwin.perftest or null;
                 rdma-core-usb4 = rdmaCoreUsb4;
                 runnerSrc = ./userspace/bench/tbv_perftest_runner.py;
                 benchConfig = import ./lib/bench { inherit lib; };
@@ -437,11 +430,8 @@
         final: prev:
         let
           isLinux = prev.stdenv.hostPlatform.isLinux;
-          isDarwin = prev.stdenv.hostPlatform.isDarwin;
           packageArgs = lib.optionalAttrs isLinux {
             rdma-core-usb4 = final.rdma-core-usb4;
-          } // lib.optionalAttrs isDarwin {
-            inherit (final) apple-sdk_26;
           };
         in
         {

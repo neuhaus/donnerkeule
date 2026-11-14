@@ -4,8 +4,6 @@
 
 #include <linux/atomic.h>
 #include <linux/completion.h>
-#include <linux/crc32.h>
-#include <linux/crc32c.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/hashtable.h>
@@ -33,8 +31,8 @@
 #include <rdma/ib_user_verbs.h>
 #include <rdma/ib_verbs.h>
 
-#include "../proto/apple_tx.h"
 #include "../proto/native_data.h"
+#include "../proto/read_resp.h"
 #include "../proto/reliability.h"
 #include "tbv.h"
 #include "verbs_internal.h"
@@ -49,7 +47,6 @@
 #define TBV_IBDEV_MAX_READ_CTX 128
 #define TBV_IBDEV_QPN_MIN 0x900
 #define TBV_IBDEV_QPN_MAX 0x00ffffff
-#define TBV_APPLE_PRIMARY_QPN TBV_IBDEV_QPN_MIN
 #define TBV_IBDEV_PAGE_SIZE_CAP (SZ_4K | SZ_2M | SZ_1G)
 #define TBV_PSN_MASK 0x00ffffffu
 /*
@@ -67,14 +64,6 @@ static_assert(TBV_RX_REORDER_MAX_FRAGS <= U16_MAX,
 	      "native fragment count overflows the u16 reorder counters");
 #define TBV_ACK_HISTORY_SIZE TBV_IBDEV_MAX_QP_WR
 #define TBV_IBDEV_GID_TBL_LEN 8
-#define TBV_APPLE_PENDING_RX_DEFAULT_SLOTS 4096
-#define TBV_APPLE_PENDING_RX_MAX_SLOTS 16384
-#define TBV_APPLE_PENDING_RX_TOTAL_BYTES_DEFAULT (64u * 1024u * 1024u)
-#define TBV_APPLE_RAW_SLOT_USER_SIZE 256
-#define TBV_APPLE_RAW_SPLIT_USER_SIZE 16
-#define TBV_APPLE_RAW_TAIL_USER_SIZE 240
-#define TBV_APPLE_RAW_DESCS_PER_CHUNK 17
-#define TBV_APPLE_TX_MAX_INFLIGHT_FRAMES_DEFAULT 4
 #define TBV_QP_TIMEOUT_DEFAULT_MS 5000
 #define TBV_QP_TIMEOUT_WORK_INTERVAL_MS 1000
 #define TBV_SEND_MAX_RETRIES 7
@@ -109,59 +98,8 @@ MODULE_PARM_DESC(zcopy_min_bytes,
 static uint qp_timeout_ms = TBV_QP_TIMEOUT_DEFAULT_MS;
 module_param(qp_timeout_ms, uint, 0644);
 MODULE_PARM_DESC(qp_timeout_ms,
-		 "Fallback milliseconds for pending native/Apple WRs and partial native receives "
+		 "Fallback milliseconds for pending native WRs and partial native receives "
 		 "when a QP has no verbs ACK timeout; 0 disables fallback timeout work");
-
-static uint apple_tx_max_inflight_wr = TBV_APPLE_TX_MAX_INFLIGHT_FRAMES_DEFAULT;
-module_param(apple_tx_max_inflight_wr, uint, 0644);
-MODULE_PARM_DESC(apple_tx_max_inflight_wr,
-		 "Deprecated: Apple-compatible UC SENDs are serialized per QP; retained for compatibility");
-
-static uint apple_tx_max_inflight_frames =
-	TBV_APPLE_TX_MAX_INFLIGHT_FRAMES_DEFAULT;
-module_param(apple_tx_max_inflight_frames, uint, 0644);
-MODULE_PARM_DESC(apple_tx_max_inflight_frames,
-		 "Maximum Apple-compatible 4 KiB FA57 frames posted before waiting for TX completions; 0 disables macOS receiver backpressure");
-
-static uint apple_tx_completion_delay_us;
-module_param(apple_tx_completion_delay_us, uint, 0644);
-MODULE_PARM_DESC(apple_tx_completion_delay_us,
-		 "Microseconds to delay successful Apple-compatible UC SEND completions after local frame TX completion; 0 disables the delay");
-
-static uint apple_rx_pending_bytes = TBV_APPLE_MAX_MSG_SIZE;
-module_param(apple_rx_pending_bytes, uint, 0644);
-MODULE_PARM_DESC(apple_rx_pending_bytes,
-		 "Maximum bytes buffered per early Apple UC receive when no receive WQE is posted");
-
-static uint apple_rx_pending_slots = TBV_APPLE_PENDING_RX_DEFAULT_SLOTS;
-module_param(apple_rx_pending_slots, uint, 0644);
-MODULE_PARM_DESC(apple_rx_pending_slots,
-		 "Maximum number of early Apple UC receives buffered per QP");
-
-static uint apple_rx_pending_total_bytes =
-	TBV_APPLE_PENDING_RX_TOTAL_BYTES_DEFAULT;
-module_param(apple_rx_pending_total_bytes, uint, 0644);
-MODULE_PARM_DESC(apple_rx_pending_total_bytes,
-		 "Maximum aggregate bytes buffered for early Apple UC receives per QP");
-
-static uint apple_rx_trace;
-module_param(apple_rx_trace, uint, 0644);
-MODULE_PARM_DESC(apple_rx_trace,
-		 "Print the first N Apple RX callbacks with SOF/EOF and assembly state");
-
-static bool tbv_apple_rx_trace_take(void)
-{
-	u32 remaining;
-
-	do {
-		remaining = READ_ONCE(apple_rx_trace);
-		if (!remaining)
-			return false;
-	} while (cmpxchg(&apple_rx_trace, remaining, remaining - 1) !=
-		 remaining);
-
-	return true;
-}
 
 static void tbv_rx_bad_header_context(const struct tbv_path *rx_path,
 				      u32 *peer_id, u32 *rail_id,
@@ -372,15 +310,6 @@ struct tbv_rx_reorder_msg {
 static_assert(sizeof(struct tbv_rx_reorder_msg) <= SZ_8K,
 	      "native reorder entry no longer fits kmalloc-8k");
 
-struct tbv_apple_pending_rx {
-	void *buf;
-	u32 capacity;
-	u32 delivered;
-	int status;
-	bool active;
-	bool ready;
-};
-
 struct tbv_ack_history_entry {
 	u32 psn;
 	int status;
@@ -395,17 +324,9 @@ enum tbv_send_post_reason {
 
 struct tbv_send_ctx;
 
-struct tbv_apple_sq_entry {
-	struct list_head node;
-	struct tbv_send_ctx *send;
-	void *payload;
-	u32 length;
-};
-
 struct tbv_qp {
 	struct ib_qp base;
 	struct tbv_state *owner;
-	enum tbv_backend_type backend;
 	/*
 	 * QP rail invariant: every QP is bound to exactly one rail at
 	 * create time and unbound at destroy time. Native non-GSI QPs may be
@@ -424,15 +345,12 @@ struct tbv_qp {
 	struct mutex post_lock;
 	bool dmabuf_draining;
 	wait_queue_head_t credit_wait;
-	wait_queue_head_t apple_tx_wait;
 	wait_queue_head_t refs_wait;
 	refcount_t refs;
 	struct completion refs_zero;
 	struct list_head pending_sends;
 	struct list_head pending_reads;
 	struct list_head pending_read_resps;
-	struct list_head apple_sq;
-	struct work_struct apple_sq_work;
 	struct work_struct error_work;
 	struct delayed_work timeout_work;
 	struct ib_qp_init_attr init_attr;
@@ -450,8 +368,6 @@ struct tbv_qp {
 	u32 remote_recv_credits;
 	u32 early_remote_recv_credit_src_qp;
 	u32 sendq_count;
-	atomic_t apple_tx_inflight;
-	atomic_t apple_tx_inflight_frames;
 	u32 send_psn;
 	u32 rx_expected_psn;
 	u32 rx_rnr_psn;
@@ -468,14 +384,6 @@ struct tbv_qp {
 	struct tbv_ack_history_entry ack_history[TBV_ACK_HISTORY_SIZE];
 	u32 rx_reorder_count;
 	u32 rx_reorder_bytes;
-	struct tbv_apple_pending_rx *apple_pending;
-	u32 apple_pending_slot_count;
-	u32 apple_pending_head;
-	u32 apple_pending_tail;
-	u32 apple_pending_ready_count;
-	u32 apple_pending_bytes;
-	int apple_pending_active;
-	u32 apple_sq_outstanding;
 	bool qpn_allocated;
 	bool rail_binding_counted;
 	bool dest_qp_known;
@@ -484,14 +392,6 @@ struct tbv_qp {
 	bool rx_rnr_active;
 	bool closing;
 	bool timeout_work_armed;
-	bool apple_tunnel_active;
-	/*
-	 * Apple FA57 frames carry no message sequence. When a message-start
-	 * frame is dropped, the only safe resync point is the next EOF=3
-	 * boundary; until then incoming frames belong to the truncated
-	 * message and must not seed a new reassembly. Protected by rx_lock.
-	 */
-	bool apple_rx_discard;
 };
 
 struct tbv_ah {
@@ -502,11 +402,10 @@ struct tbv_ah {
 struct tbv_ibdev {
 	struct ib_device base;
 	struct tbv_state *state;
-	enum tbv_backend_type backend;
 	struct net_device *netdev;
 	struct tbv_qp *gsi_qp;
 	/*
-	 * Per-rail device identity. Apple and GSI QPs stay on this rail.
+	 * Per-rail device identity. GSI QPs stay on this rail.
 	 * Native data QPs created on this device may be assigned to sibling
 	 * rails for the same peer by tbv_select_qp_rail_locked().
 	 */
@@ -531,7 +430,6 @@ struct tbv_send_ctx {
 	u32 psn;
 	enum tbv_native_data_op opcode;
 	enum ib_wc_opcode wc_opcode;
-	atomic_t apple_pending;
 	atomic_t tx_pending;
 	u8 retries;
 	u8 max_retries;
@@ -549,12 +447,6 @@ struct tbv_send_ctx {
 	bool recv_credit_required;
 	bool solicited;
 	bool sq_counted;
-	bool apple_window_acquired;
-	bool apple_window_wr_acquired;
-	bool apple_sq_counted;
-	u32 apple_window_frames;
-	struct delayed_work apple_complete_work;
-	int apple_complete_status;
 };
 
 struct tbv_read_ctx {
@@ -575,6 +467,7 @@ struct tbv_read_ctx {
 	bool completed;
 	bool ready;
 	bool sq_counted;
+	bool retry_sent;
 	struct list_head resp_frags;
 	struct tbv_read_segment segs[TBV_IBDEV_MAX_SGE];
 };
@@ -615,13 +508,6 @@ struct tbv_send_page_stream {
 	int nsegs;
 };
 
-struct tbv_apple_send_fill {
-	const void *payload;
-	u32 payload_len;
-	u32 crc;
-	bool append_crc;
-};
-
 struct tbv_gsi_send_ctx {
 	struct tbv_qp *tqp;
 	struct ib_cqe *wr_cqe;
@@ -632,9 +518,6 @@ static DEFINE_IDA(tbv_qpn_ida);
 static void tbv_send_ctx_put(struct tbv_send_ctx *send);
 static bool tbv_send_complete(struct tbv_send_ctx *send, int status);
 static void tbv_send_tx_done(void *ctx, int status);
-static void tbv_apple_send_tx_done(void *ctx, int status);
-static void tbv_apple_sq_work(struct work_struct *work);
-static void tbv_qp_flush_apple_sq(struct tbv_qp *tqp);
 static void tbv_read_ctx_put(struct tbv_read_ctx *read);
 static bool tbv_read_complete(struct tbv_read_ctx *read, int status);
 static void tbv_read_tx_done(void *ctx, int status);
@@ -646,7 +529,6 @@ static int tbv_rx_copy_to_wqe(struct tbv_state *state,
 			      const void *payload, u32 len, u32 *delivered);
 static void tbv_qp_flush_reorder(struct tbv_qp *tqp);
 static void tbv_qp_flush_active_rx(struct tbv_qp *tqp);
-static void tbv_qp_release_apple_tunnel(struct tbv_qp *tqp);
 static void tbv_rx_fail_active_send(struct tbv_state *state, struct tbv_qp *tqp,
 				    struct tbv_path *rx_path,
 				    enum ib_wc_status status);
@@ -661,9 +543,6 @@ static void tbv_rx_drop_reorder_msg_locked(struct tbv_state *state,
 static void tbv_rx_drain_reorder_locked(struct tbv_state *state,
 					struct tbv_qp *tqp,
 					struct tbv_path *rx_path);
-static void tbv_qp_flush_apple_pending(struct tbv_qp *tqp);
-static void tbv_apple_rx_drain_pending_locked(struct tbv_state *state,
-					      struct tbv_qp *tqp);
 static void tbv_qp_advertise_recv_credits(struct tbv_qp *tqp);
 static int tbv_qp_consume_remote_recv_credit(struct tbv_qp *tqp);
 static void tbv_qp_return_remote_recv_credit(struct tbv_qp *tqp);
@@ -707,20 +586,9 @@ static s32 tbv_psn_delta(u32 a, u32 b)
 	return (s32)delta;
 }
 
-static bool tbv_backend_is_apple(enum tbv_backend_type backend)
-{
-	return backend == TBV_BACKEND_APPLE;
-}
-
-static bool tbv_qp_uses_apple_transport(const struct tbv_qp *tqp)
-{
-	return tqp && tbv_backend_is_apple(tqp->backend);
-}
-
 static u32 tbv_qp_max_msg_size(const struct tbv_qp *tqp)
 {
-	return tbv_qp_uses_apple_transport(tqp) ? TBV_APPLE_MAX_MSG_SIZE :
-						  TBV_NATIVE_DATA_MAX_MSG_SIZE;
+	return TBV_NATIVE_DATA_MAX_MSG_SIZE;
 }
 
 static bool tbv_qp_is_kernel_gsi(const struct tbv_qp *tqp)
@@ -775,39 +643,16 @@ static void tbv_wc_set_recv_wr(struct ib_wc *wc,
 		wc->wr_id = wqe->wr_id;
 }
 
-static u32 tbv_apple_qpn_from_path(const struct tbv_path *path)
+/*
+ * QPNs are part of the wire identity. The transport can still deliver delayed
+ * frames after userspace destroys a QP, so recycling a QPN immediately lets old
+ * frames target a new connection. Keep QPNs allocated until module unload;
+ * failed creates free their unpublished QPN at the allocation site.
+ */
+static int tbv_alloc_qpn(void)
 {
-	if (!path || path->cfg.receive_path < 0)
-		return TBV_APPLE_PRIMARY_QPN;
-
-	return (u32)path->cfg.receive_path << TBV_APPLE_QPN_SHIFT;
-}
-
-static int tbv_alloc_qpn(const struct tbv_state *state,
-			 enum tbv_backend_type backend)
-{
-	if (tbv_backend_is_apple(backend))
-		return ida_alloc_range(&tbv_qpn_ida, TBV_APPLE_PRIMARY_QPN,
-				       TBV_APPLE_PRIMARY_QPN, GFP_KERNEL);
-
-	return ida_alloc_range(&tbv_qpn_ida,
-			       state && state->cfg.apple_enabled ?
-			       TBV_IBDEV_QPN_MIN + 0x1000 :
-			       TBV_IBDEV_QPN_MIN,
+	return ida_alloc_range(&tbv_qpn_ida, TBV_IBDEV_QPN_MIN,
 			       TBV_IBDEV_QPN_MAX, GFP_KERNEL);
-}
-
-static void tbv_free_qpn(enum tbv_backend_type backend, u32 qpn)
-{
-	/*
-	 * Native QPNs are part of the wire identity. The transport can still
-	 * deliver delayed frames after userspace destroys a QP, so recycling a
-	 * native QPN immediately lets old frames target a new connection. Keep
-	 * native QPNs allocated until module unload; failed creates free their
-	 * unpublished QPN at the allocation site.
-	 */
-	if (tbv_backend_is_apple(backend))
-		ida_free(&tbv_qpn_ida, qpn);
 }
 
 static struct tbv_ibdev *tbv_to_ibdev(struct ib_device *ibdev)
@@ -820,11 +665,6 @@ struct tbv_state *tbv_ibdev_state(struct ib_device *ibdev)
 	struct tbv_ibdev *dev = tbv_to_ibdev(ibdev);
 
 	return dev->state;
-}
-
-enum tbv_backend_type tbv_ibdev_backend(struct ib_device *ibdev)
-{
-	return tbv_to_ibdev(ibdev)->backend;
 }
 
 static struct tbv_qp *tbv_qp_get_by_num(struct tbv_state *state, u32 qpn)
@@ -890,6 +730,8 @@ static unsigned long tbv_verbs_ack_timeout_jiffies(u8 timeout)
 static unsigned long
 tbv_qp_tx_timeout_jiffies_locked(const struct tbv_qp *tqp)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	if (tqp->type == IB_QPT_RC && tqp->ack_timeout_set)
 		return tbv_verbs_ack_timeout_jiffies(tqp->attr.timeout);
 
@@ -902,6 +744,8 @@ tbv_qp_rx_timeout_jiffies_locked(const struct tbv_qp *tqp,
 {
 	unsigned long rx_timeout;
 	u8 retry_cnt;
+
+	lockdep_assert_held(&tqp->lock);
 
 	if (!tx_timeout)
 		return 0;
@@ -923,6 +767,8 @@ tbv_qp_timeout_interval_jiffies_locked(const struct tbv_qp *tqp)
 		msecs_to_jiffies(TBV_QP_TIMEOUT_WORK_INTERVAL_MS);
 	unsigned long read_interval = msecs_to_jiffies(TBV_READ_RESP_RETRY_MS);
 	unsigned long interval;
+
+	lockdep_assert_held(&tqp->lock);
 
 	if (!timeout)
 		return 0;
@@ -990,6 +836,8 @@ static void tbv_qp_schedule_timeout_delay_locked(struct tbv_qp *tqp,
 	struct workqueue_struct *wq = tqp->owner && tqp->owner->workqueue ?
 				      tqp->owner->workqueue : system_wq;
 
+	lockdep_assert_held(&tqp->lock);
+
 	if (!delay || tqp->closing || (tqp->timeout_work_armed && !replace))
 		return;
 
@@ -999,6 +847,8 @@ static void tbv_qp_schedule_timeout_delay_locked(struct tbv_qp *tqp,
 
 static void tbv_qp_schedule_timeout_locked(struct tbv_qp *tqp)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	tbv_qp_schedule_timeout_delay_locked(tqp,
 					     tbv_qp_timeout_interval_jiffies_locked(tqp),
 					     false);
@@ -1008,6 +858,8 @@ static void tbv_qp_schedule_timeout_now_locked(struct tbv_qp *tqp)
 {
 	struct workqueue_struct *wq = tqp->owner && tqp->owner->workqueue ?
 				      tqp->owner->workqueue : system_wq;
+
+	lockdep_assert_held(&tqp->lock);
 
 	if (!tbv_qp_tx_timeout_jiffies_locked(tqp) || tqp->closing)
 		return;
@@ -1049,7 +901,6 @@ static bool tbv_qp_mark_error(struct tbv_qp *tqp)
 
 	if (changed) {
 		wake_up_all(&tqp->credit_wait);
-		wake_up_all(&tqp->apple_tx_wait);
 		tbv_qp_flush_error(tqp);
 	}
 
@@ -1200,6 +1051,8 @@ static void tbv_qp_ack_history_store_locked(struct tbv_qp *tqp, u32 psn,
 {
 	struct tbv_ack_history_entry *entry;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	entry = &tqp->ack_history[psn % TBV_ACK_HISTORY_SIZE];
 	entry->psn = psn & TBV_PSN_MASK;
 	entry->status = status;
@@ -1210,6 +1063,8 @@ static bool tbv_qp_ack_history_lookup_locked(struct tbv_qp *tqp, u32 psn,
 					     int *status)
 {
 	const struct tbv_ack_history_entry *entry;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	entry = &tqp->ack_history[psn % TBV_ACK_HISTORY_SIZE];
 	if (!entry->valid || entry->psn != (psn & TBV_PSN_MASK))
@@ -1226,6 +1081,8 @@ static bool tbv_rx_reack_duplicate_locked(struct tbv_state *state,
 					  u32 psn)
 {
 	int status = 0;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (tbv_psn_delta(psn, tqp->rx_expected_psn) >= 0)
 		return false;
@@ -1276,6 +1133,8 @@ static int tbv_qp_reserve_sendq(struct tbv_qp *tqp)
 static void tbv_qp_release_sendq_counted_locked(struct tbv_qp *tqp,
 						bool *counted)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	if (!*counted)
 		return;
 	if (WARN_ON_ONCE(!tqp->sendq_count))
@@ -1331,19 +1190,6 @@ static void tbv_qp_queue_read_resp(struct tbv_qp *tqp,
 	spin_unlock_irqrestore(&tqp->lock, flags);
 }
 
-static void tbv_qp_arm_send_timeout(struct tbv_qp *tqp,
-				    struct tbv_send_ctx *send)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	if (send->pending && !send->queued_jiffies) {
-		tbv_send_mark_queued(send, jiffies);
-		tbv_qp_schedule_timeout_locked(tqp);
-	}
-	spin_unlock_irqrestore(&tqp->lock, flags);
-}
-
 static void tbv_qp_arm_read_timeout(struct tbv_qp *tqp,
 				    struct tbv_read_ctx *read)
 {
@@ -1351,6 +1197,24 @@ static void tbv_qp_arm_read_timeout(struct tbv_qp *tqp,
 
 	spin_lock_irqsave(&tqp->lock, flags);
 	if (!list_empty(&read->node) && !read->queued_jiffies) {
+		read->queued_jiffies = jiffies;
+		tbv_qp_schedule_timeout_locked(tqp);
+	}
+	spin_unlock_irqrestore(&tqp->lock, flags);
+}
+
+/*
+ * A READ that is taking new bytes is making progress, so its requester
+ * timeout starts again. Armed once, one ack timeout has to cover the whole
+ * transfer, and a large READ that is draining normally still expires.
+ */
+static void tbv_qp_restart_read_timeout(struct tbv_qp *tqp,
+					struct tbv_read_ctx *read)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&tqp->lock, flags);
+	if (!list_empty(&read->node) && read->queued_jiffies) {
 		read->queued_jiffies = jiffies;
 		tbv_qp_schedule_timeout_locked(tqp);
 	}
@@ -1410,6 +1274,8 @@ static void tbv_qp_drain_ready_sends_locked(struct tbv_qp *tqp,
 					    struct list_head *complete)
 {
 	struct tbv_send_ctx *send;
+
+	lockdep_assert_held(&tqp->lock);
 
 	while (!list_empty(&tqp->pending_sends)) {
 		send = list_first_entry(&tqp->pending_sends,
@@ -1719,9 +1585,7 @@ static void tbv_cancel_send_ctx_packets(struct tbv_send_ctx *send)
 	}
 
 	tqp = send->tqp;
-	if (!tqp->owner->native_fragment_striping ||
-	    tbv_qp_uses_apple_transport(tqp) ||
-	    tqp->rail->peer->backend != TBV_BACKEND_NATIVE) {
+	if (!tqp->owner->native_fragment_striping) {
 		/*
 		 * Without native SEND striping, a send_ctx's QP is pinned to
 		 * exactly one rail and that rail's path is the only place this
@@ -1751,8 +1615,6 @@ static void tbv_cancel_read_ctx_packets(struct tbv_read_ctx *read)
 	/* See tbv_cancel_send_ctx_packets() for the per-rail invariant. */
 	if (!read || !read->tqp || !read->tqp->rail)
 		return;
-	if (read->tqp->rail->peer->backend != TBV_BACKEND_NATIVE)
-		return;
 	tbv_path_cancel_data_done_ctx(&read->tqp->rail->path,
 				      tbv_read_tx_done, read);
 }
@@ -1760,15 +1622,6 @@ static void tbv_cancel_read_ctx_packets(struct tbv_read_ctx *read)
 static bool tbv_rail_get_data_ready_locked(struct tbv_rail *rail)
 {
 	if (!tbv_rail_data_ready(rail) || rail->removing)
-		return false;
-
-	refcount_inc(&rail->refcnt);
-	return true;
-}
-
-static bool tbv_rail_get_apple_data_ready_locked(struct tbv_rail *rail)
-{
-	if (!tbv_rail_apple_data_ready(rail) || rail->removing)
 		return false;
 
 	refcount_inc(&rail->refcnt);
@@ -1801,30 +1654,20 @@ static bool tbv_ibdev_rail_publish_ready_locked(struct tbv_state *state,
 {
 	struct tbv_peer *peer;
 
-	if (!state || !rail || rail->removing)
+	if (!state)
+		return false;
+	lockdep_assert_held(&state->lock);
+	if (!rail || rail->removing)
 		return false;
 	peer = rail->peer;
 	if (!peer)
 		return false;
 
-	if (peer->backend == TBV_BACKEND_NATIVE)
-		return tbv_rail_data_ready(rail);
-	if (peer->backend != TBV_BACKEND_APPLE)
-		return false;
-
-	if (state->apple_rails_wait_tbnet &&
-	    !tbv_tbnet_minimal_path_ready(&state->tbnet_identity,
-					  peer->xd ? peer->xd->remote_uuid : NULL))
-		return false;
-	if (!tbv_rail_apple_data_ready(rail))
-		return false;
-
-	return true;
+	return tbv_rail_data_ready(rail);
 }
 
 static struct tbv_rail *
-tbv_select_qp_rail_locked(struct tbv_ibdev *dev, enum tbv_backend_type backend,
-			  bool gsi, bool *counted)
+tbv_select_qp_rail_locked(struct tbv_ibdev *dev, bool gsi, bool *counted)
 {
 	struct tbv_rail *home = dev->rail;
 	struct tbv_peer *peer;
@@ -1836,22 +1679,21 @@ tbv_select_qp_rail_locked(struct tbv_ibdev *dev, enum tbv_backend_type backend,
 	u32 best_rail_id = U32_MAX;
 	u32 next_rail_id;
 
+	lockdep_assert_held(&dev->state->lock);
+
 	*counted = false;
 	if (WARN_ON_ONCE(!home))
 		return NULL;
 	if (home->removing)
 		return NULL;
 
-	if (backend != TBV_BACKEND_NATIVE || gsi) {
-		if (backend == TBV_BACKEND_APPLE &&
-		    !tbv_ibdev_rail_publish_ready_locked(dev->state, home))
-			return NULL;
+	if (gsi) {
 		refcount_inc(&home->refcnt);
 		return home;
 	}
 
 	peer = home->peer;
-	if (!peer || peer->backend != TBV_BACKEND_NATIVE)
+	if (!peer)
 		return NULL;
 
 	next_rail_id = peer->native_qp_rr_rail_id;
@@ -1913,6 +1755,8 @@ static u32 tbv_collect_peer_data_paths_locked(struct tbv_peer *peer,
 {
 	struct tbv_rail *rail;
 
+	lockdep_assert_held(&peer->state->lock);
+
 	list_for_each_entry(rail, &peer->rails, node) {
 		if (count == max_paths)
 			break;
@@ -1936,10 +1780,12 @@ static u32 tbv_collect_native_data_paths_for_qp_locked(struct tbv_qp *tqp,
 	struct tbv_peer *pos;
 	u32 count;
 
+	lockdep_assert_held(&tqp->owner->lock);
+
 	if (!tqp->rail || max_paths == 0)
 		return 0;
 	peer = tqp->rail->peer;
-	if (!peer || peer->backend != TBV_BACKEND_NATIVE)
+	if (!peer)
 		return 0;
 
 	count = tbv_collect_peer_data_paths_locked(peer, paths, 0, max_paths);
@@ -1947,8 +1793,7 @@ static u32 tbv_collect_native_data_paths_for_qp_locked(struct tbv_qp *tqp,
 		return count;
 
 	list_for_each_entry(pos, &peer->state->peers, node) {
-		if (pos == peer || pos->backend != TBV_BACKEND_NATIVE ||
-		    !pos->remote_host_known ||
+		if (pos == peer || !pos->remote_host_known ||
 		    memcmp(pos->remote_host_id, peer->remote_host_id,
 			   sizeof(pos->remote_host_id)))
 			continue;
@@ -1963,8 +1808,8 @@ tbv_select_native_data_path_for_qp_locked(struct tbv_qp *tqp)
 {
 	struct tbv_rail *rail = tqp->rail;
 
-	if (rail->peer->backend != TBV_BACKEND_NATIVE)
-		return NULL;
+	lockdep_assert_held(&tqp->owner->lock);
+
 	if (!tbv_rail_get_data_ready_locked(rail))
 		return NULL;
 	return &rail->path;
@@ -2008,8 +1853,7 @@ tbv_select_native_control_path_for_qp_locked(struct tbv_qp *tqp,
 	u32 best_data_score = U32_MAX;
 	u32 best_control_score = U32_MAX;
 
-	if (peer->backend != TBV_BACKEND_NATIVE)
-		return NULL;
+	lockdep_assert_held(&tqp->owner->lock);
 
 	list_for_each_entry(rail, &peer->rails, node) {
 		u32 data_score;
@@ -2037,18 +1881,6 @@ tbv_select_native_control_path_for_qp_locked(struct tbv_qp *tqp,
 	}
 
 	return best ? &best->path : NULL;
-}
-
-static struct tbv_path *
-tbv_first_active_apple_path_for_qp_locked(struct tbv_qp *tqp)
-{
-	struct tbv_rail *rail = tqp->rail;
-
-	if (rail->peer->backend != TBV_BACKEND_APPLE)
-		return NULL;
-	if (!tbv_rail_get_apple_data_ready_locked(rail))
-		return NULL;
-	return &rail->path;
 }
 
 static struct tbv_qp *tbv_path_get_gsi_qp(struct tbv_path *path)
@@ -2220,8 +2052,6 @@ static int tbv_query_device(struct ib_device *ibdev,
 			    struct ib_device_attr *attr,
 			    struct ib_udata *udata)
 {
-	bool apple = tbv_backend_is_apple(tbv_ibdev_backend(ibdev));
-
 	memset(attr, 0, sizeof(*attr));
 	attr->vendor_id = 0x1d6b;
 	attr->vendor_part_id = 0x5442;
@@ -2232,7 +2062,7 @@ static int tbv_query_device(struct ib_device *ibdev,
 	attr->kernel_cap_flags = IBK_LOCAL_DMA_LKEY;
 	attr->max_mr_size = U64_MAX;
 	attr->page_size_cap = TBV_IBDEV_PAGE_SIZE_CAP;
-	attr->max_qp = apple ? 1 : TBV_IBDEV_MAX_QP;
+	attr->max_qp = TBV_IBDEV_MAX_QP;
 	attr->max_qp_wr = TBV_IBDEV_MAX_QP_WR;
 	attr->max_send_sge = TBV_IBDEV_MAX_SGE;
 	attr->max_recv_sge = TBV_IBDEV_MAX_SGE;
@@ -2241,10 +2071,9 @@ static int tbv_query_device(struct ib_device *ibdev,
 	attr->max_cqe = TBV_IBDEV_MAX_CQE;
 	attr->max_mr = 1024;
 	attr->max_pd = 256;
-	attr->max_qp_rd_atom = apple ? 0 : TBV_IBDEV_MAX_READ_CTX;
-	attr->max_res_rd_atom = apple ? 0 :
-				 TBV_IBDEV_MAX_QP * TBV_IBDEV_MAX_READ_CTX;
-	attr->max_qp_init_rd_atom = apple ? 0 : TBV_IBDEV_MAX_READ_CTX;
+	attr->max_qp_rd_atom = TBV_IBDEV_MAX_READ_CTX;
+	attr->max_res_rd_atom = TBV_IBDEV_MAX_QP * TBV_IBDEV_MAX_READ_CTX;
+	attr->max_qp_init_rd_atom = TBV_IBDEV_MAX_READ_CTX;
 	attr->atomic_cap = IB_ATOMIC_NONE;
 	attr->max_pkeys = 1;
 	attr->local_ca_ack_delay = 15;
@@ -2308,7 +2137,6 @@ static int tbv_query_port(struct ib_device *ibdev, u32 port_num,
 			  struct ib_port_attr *attr)
 {
 	struct tbv_ibdev *dev = container_of(ibdev, struct tbv_ibdev, base);
-	bool apple = tbv_backend_is_apple(dev->backend);
 	bool active;
 
 	if (port_num != 1)
@@ -2321,9 +2149,8 @@ static int tbv_query_port(struct ib_device *ibdev, u32 port_num,
 				    IB_PORT_PHYS_STATE_DISABLED;
 	attr->max_mtu = IB_MTU_4096;
 	attr->active_mtu = IB_MTU_4096;
-	attr->max_msg_sz = apple ? TBV_APPLE_MAX_MSG_SIZE :
-				   TBV_NATIVE_DATA_MAX_MSG_SIZE;
-	attr->lid = apple ? 1 : 0;
+	attr->max_msg_sz = TBV_NATIVE_DATA_MAX_MSG_SIZE;
+	attr->lid = 0;
 	attr->gid_tbl_len = TBV_IBDEV_GID_TBL_LEN;
 	attr->pkey_tbl_len = 1;
 	attr->max_vl_num = 1;
@@ -2364,29 +2191,17 @@ static enum rdma_link_layer tbv_get_link_layer(struct ib_device *ibdev,
 	return IB_LINK_LAYER_ETHERNET;
 }
 
-static const char *tbv_ibdev_netdev_name_for(struct tbv_state *state,
-					     enum tbv_backend_type backend)
+static const char *tbv_ibdev_netdev_name(void)
 {
-	const char *name = roce_netdev;
-
-	if (tbv_backend_is_apple(backend) &&
-	    state->tbnet_identity.gid_netdev_name[0])
-		name = state->tbnet_identity.gid_netdev_name;
-
-	if (!name || !*name)
+	if (!roce_netdev || !*roce_netdev)
 		return NULL;
 
-	return name;
-}
-
-static const char *tbv_ibdev_netdev_name(const struct tbv_ibdev *dev)
-{
-	return tbv_ibdev_netdev_name_for(dev->state, dev->backend);
+	return roce_netdev;
 }
 
 static int tbv_ibdev_attach_netdev(struct tbv_ibdev *dev)
 {
-	const char *name = tbv_ibdev_netdev_name(dev);
+	const char *name = tbv_ibdev_netdev_name();
 	struct net_device *ndev;
 	int ret = 0;
 
@@ -2582,15 +2397,11 @@ static int tbv_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *init_attr,
 		tqp->attr.rnr_retry = 7; /* infinite, per the IB spec */
 		tqp->attr.retry_cnt = TBV_SEND_MAX_RETRIES;
 	}
-	tqp->backend = tbv_ibdev_backend(qp->device);
-	if (tbv_backend_is_apple(tqp->backend) &&
-	    init_attr->qp_type != IB_QPT_UC)
-		return -EOPNOTSUPP;
 	if (gsi && (udata || init_attr->port_num != 1))
 		return -EOPNOTSUPP;
 
 	mutex_lock(&state->lock);
-	tqp->rail = tbv_select_qp_rail_locked(dev, tqp->backend, gsi,
+	tqp->rail = tbv_select_qp_rail_locked(dev, gsi,
 					      &tqp->rail_binding_counted);
 	if (!tqp->rail) {
 		mutex_unlock(&state->lock);
@@ -2608,7 +2419,7 @@ static int tbv_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *init_attr,
 	if (gsi) {
 		qpn = TBV_GSI_QPN;
 	} else {
-		qpn = tbv_alloc_qpn(state, tqp->backend);
+		qpn = tbv_alloc_qpn();
 		if (qpn < 0) {
 			ret = qpn;
 			goto err_put_rail;
@@ -2627,32 +2438,6 @@ static int tbv_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *init_attr,
 		tqp->recvq_size = init_attr->cap.max_recv_wr;
 	}
 
-	if (tbv_backend_is_apple(tqp->backend)) {
-		u32 slots = min_t(u32, READ_ONCE(apple_rx_pending_slots),
-				  TBV_APPLE_PENDING_RX_MAX_SLOTS);
-
-		if (!slots || !READ_ONCE(apple_rx_pending_bytes) ||
-		    !READ_ONCE(apple_rx_pending_total_bytes)) {
-			kfree(tqp->recvq);
-			if (!gsi)
-				ida_free(&tbv_qpn_ida, qpn);
-			ret = -EINVAL;
-			goto err_put_rail;
-		}
-
-		tqp->apple_pending =
-			kvcalloc(slots, sizeof(*tqp->apple_pending),
-				 GFP_KERNEL);
-		if (!tqp->apple_pending) {
-			kfree(tqp->recvq);
-			if (!gsi)
-				ida_free(&tbv_qpn_ida, qpn);
-			ret = -ENOMEM;
-			goto err_put_rail;
-		}
-		tqp->apple_pending_slot_count = slots;
-	}
-
 	tqp->init_attr = *init_attr;
 	tqp->owner = state;
 	spin_lock_init(&tqp->lock);
@@ -2660,22 +2445,16 @@ static int tbv_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *init_attr,
 	mutex_init(&tqp->ack_lock);
 	mutex_init(&tqp->post_lock);
 	init_waitqueue_head(&tqp->credit_wait);
-	init_waitqueue_head(&tqp->apple_tx_wait);
 	init_waitqueue_head(&tqp->refs_wait);
 	refcount_set(&tqp->refs, 1);
-	atomic_set(&tqp->apple_tx_inflight, 0);
-	atomic_set(&tqp->apple_tx_inflight_frames, 0);
 	init_completion(&tqp->refs_zero);
 	INIT_LIST_HEAD(&tqp->pending_sends);
 	INIT_LIST_HEAD(&tqp->pending_reads);
 	INIT_LIST_HEAD(&tqp->pending_read_resps);
-	INIT_LIST_HEAD(&tqp->apple_sq);
 	INIT_LIST_HEAD(&tqp->rx_reorder);
 	hash_init(tqp->rx_reorder_hash);
-	INIT_WORK(&tqp->apple_sq_work, tbv_apple_sq_work);
 	INIT_WORK(&tqp->error_work, tbv_qp_error_work);
 	INIT_DELAYED_WORK(&tqp->timeout_work, tbv_qp_timeout_work);
-	tqp->apple_pending_active = -1;
 	tqp->state = IB_QPS_RESET;
 	tqp->type = init_attr->qp_type;
 	tqp->qpn_allocated = !gsi;
@@ -2687,7 +2466,6 @@ static int tbv_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *init_attr,
 				  GFP_KERNEL);
 		xa_unlock_irqrestore(&tqp->owner->verbs_qps_xa, flags);
 		if (ret) {
-			kvfree(tqp->apple_pending);
 			kfree(tqp->recvq);
 			ida_free(&tbv_qpn_ida, qpn);
 			tqp->qpn_allocated = false;
@@ -2697,7 +2475,6 @@ static int tbv_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *init_attr,
 		mutex_lock(&state->lock);
 		if (dev->gsi_qp) {
 			mutex_unlock(&state->lock);
-			kvfree(tqp->apple_pending);
 			kfree(tqp->recvq);
 			ret = -EBUSY;
 			goto err_put_rail;
@@ -2754,7 +2531,6 @@ static int tbv_destroy_qp(struct ib_qp *qp, struct ib_udata *udata)
 	LIST_HEAD(flush);
 	unsigned long flags;
 	u32 pending;
-	u32 i;
 
 	tbv_dmabuf_drain_qp(tqp);
 	spin_lock_irqsave(&tqp->lock, flags);
@@ -2770,14 +2546,11 @@ static int tbv_destroy_qp(struct ib_qp *qp, struct ib_udata *udata)
 	}
 
 	wake_up_all(&tqp->credit_wait);
-	wake_up_all(&tqp->apple_tx_wait);
-	cancel_work_sync(&tqp->apple_sq_work);
 	cancel_delayed_work_sync(&tqp->timeout_work);
 	spin_lock_irqsave(&tqp->lock, flags);
 	tqp->timeout_work_armed = false;
 	spin_unlock_irqrestore(&tqp->lock, flags);
 
-	tbv_qp_flush_apple_sq(tqp);
 	if (tbv_dmabuf_verbs_enabled())
 		mutex_lock(&tqp->ack_lock);
 	tbv_qp_flush_sends(tqp, &flush);
@@ -2832,140 +2605,15 @@ static int tbv_destroy_qp(struct ib_qp *qp, struct ib_udata *udata)
 	wait_for_completion(&tqp->refs_zero);
 	tbv_qp_flush_active_rx(tqp);
 	tbv_qp_flush_reorder(tqp);
-	tbv_qp_flush_apple_pending(tqp);
-	for (i = 0; i < tqp->apple_pending_slot_count; i++)
-		kvfree(tqp->apple_pending[i].buf);
-	kvfree(tqp->apple_pending);
 
 	pending = tqp->recv_count;
 	if (tqp->owner && pending)
 		atomic_sub(pending, &tqp->owner->verbs_recv_wqes);
 	kfree(tqp->recvq);
-	if (tqp->qpn_allocated) {
-		tbv_free_qpn(tqp->backend, qp->qp_num);
-		tqp->qpn_allocated = false;
-	}
 	if (tqp->owner)
 		atomic_dec(&tqp->owner->verbs_qps);
-	tbv_qp_release_apple_tunnel(tqp);
 	tbv_qp_unbind_rail(tqp);
 	return 0;
-}
-
-static bool tbv_qp_state_uses_transport(enum ib_qp_state state)
-{
-	return state == IB_QPS_RTR || state == IB_QPS_RTS ||
-	       state == IB_QPS_SQD || state == IB_QPS_SQE;
-}
-
-static bool tbv_qp_get_apple_send_live(struct tbv_qp *tqp)
-{
-	unsigned long flags;
-	bool ok = false;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	if (!tqp->closing && tqp->state == IB_QPS_RTS &&
-	    refcount_inc_not_zero(&tqp->refs))
-		ok = true;
-	spin_unlock_irqrestore(&tqp->lock, flags);
-	return ok;
-}
-
-static int tbv_qp_ensure_apple_tunnel(struct tbv_qp *tqp, bool *acquired)
-{
-	struct tbv_rail *rail = tqp->rail;
-	struct tbv_peer *peer;
-	struct tbv_state *state;
-	bool counted = false;
-	u32 refs = 0;
-	int ret = 0;
-
-	if (acquired)
-		*acquired = false;
-	if (!tbv_qp_uses_apple_transport(tqp))
-		return 0;
-	if (!rail || !refcount_inc_not_zero(&rail->refcnt))
-		return -ENODEV;
-
-	peer = rail->peer;
-	state = peer ? peer->state : NULL;
-	if (!peer || !state || !peer->xd) {
-		tbv_rail_put(rail);
-		return -ENODEV;
-	}
-
-	mutex_lock(&peer->control_lock);
-	mutex_lock(&state->lock);
-	if (tqp->apple_tunnel_active) {
-		ret = 0;
-	} else if (rail->removing) {
-		ret = -ENODEV;
-	} else if (rail->path.state == TBV_PATH_TUNNEL_ENABLED) {
-		rail->apple_tunnel_qps++;
-		refs = rail->apple_tunnel_qps;
-		tqp->apple_tunnel_active = true;
-		counted = true;
-	} else {
-		ret = -ENOTCONN;
-	}
-	mutex_unlock(&state->lock);
-	mutex_unlock(&peer->control_lock);
-
-	if (counted)
-		pr_debug("Apple data tunnel ref acquired route=0x%llx qpn=%u refs=%u\n",
-			 peer->xd->route, tqp->base.qp_num, refs);
-	if (acquired)
-		*acquired = counted;
-	tbv_rail_put(rail);
-	return ret;
-}
-
-static void tbv_qp_release_apple_tunnel(struct tbv_qp *tqp)
-{
-	struct tbv_rail *rail = tqp->rail;
-	struct tbv_peer *peer;
-	struct tbv_state *state;
-	u32 refs = 0;
-	u64 route = 0;
-
-	if (!tbv_qp_uses_apple_transport(tqp))
-		return;
-	if (!rail || !refcount_inc_not_zero(&rail->refcnt))
-		return;
-
-	peer = rail->peer;
-	state = peer ? peer->state : NULL;
-	if (!peer || !state || !peer->xd) {
-		tbv_rail_put(rail);
-		return;
-	}
-
-	mutex_lock(&peer->control_lock);
-	mutex_lock(&state->lock);
-	if (tqp->apple_tunnel_active) {
-		tqp->apple_tunnel_active = false;
-		if (WARN_ON_ONCE(!rail->apple_tunnel_qps)) {
-			rail->apple_tunnel_qps = 0;
-		} else {
-			rail->apple_tunnel_qps--;
-		}
-		refs = rail->apple_tunnel_qps;
-		route = peer->xd->route;
-	}
-	mutex_unlock(&state->lock);
-	/*
-	 * Apple FA57 frames carry no connection incarnation, and local TX
-	 * completion does not prove the peer has consumed every frame. Treat the
-	 * enabled tunnel as a published rail resource; disabling it at last-QP
-	 * close can cut the peer's receive in the middle of a WQE. Rail teardown
-	 * still disables the tunnel through tbv_path_destroy().
-	 */
-	if (!refs)
-		pr_debug("Apple data tunnel left enabled after last QP route=0x%llx qpn=%u\n",
-			 route, tqp->base.qp_num);
-	mutex_unlock(&peer->control_lock);
-
-	tbv_rail_put(rail);
 }
 
 static int tbv_validate_modify_qp_locked(struct tbv_qp *tqp,
@@ -2973,6 +2621,8 @@ static int tbv_validate_modify_qp_locked(struct tbv_qp *tqp,
 					 enum ib_qp_state *cur_state,
 					 enum ib_qp_state *next_state)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	*cur_state = tqp->state;
 	*next_state = (attr_mask & IB_QP_STATE) ? attr->qp_state : *cur_state;
 
@@ -2980,8 +2630,8 @@ static int tbv_validate_modify_qp_locked(struct tbv_qp *tqp,
 	    attr->cur_qp_state != *cur_state)
 		return -EINVAL;
 	if (!ib_modify_qp_is_ok(*cur_state, *next_state, tqp->type, attr_mask)) {
-		pr_warn_ratelimited("modify_qp invalid transition qpn=%u backend=%u type=%u cur=%u next=%u mask=0x%x\n",
-				    tqp->base.qp_num, tqp->backend, tqp->type,
+		pr_warn_ratelimited("modify_qp invalid transition qpn=%u type=%u cur=%u next=%u mask=0x%x\n",
+				    tqp->base.qp_num, tqp->type,
 				    *cur_state, *next_state, attr_mask);
 		return -EINVAL;
 	}
@@ -3001,9 +2651,6 @@ static int tbv_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 	enum ib_qp_state cur_state;
 	enum ib_qp_state next_state;
 	unsigned long flags;
-	bool activate_apple_tunnel = false;
-	bool deactivate_apple_tunnel = false;
-	bool apple_tunnel_acquired = false;
 	bool flush_error = false;
 	int ret = 0;
 
@@ -3016,27 +2663,6 @@ static int tbv_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 	if ((attr_mask & IB_QP_MAX_QP_RD_ATOMIC) &&
 	    attr->max_rd_atomic > TBV_IBDEV_MAX_READ_CTX)
 		return -EINVAL;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	ret = tbv_validate_modify_qp_locked(tqp, attr, attr_mask, &cur_state,
-					    &next_state);
-	if (!ret && tbv_qp_uses_apple_transport(tqp)) {
-		activate_apple_tunnel =
-			tbv_qp_state_uses_transport(next_state);
-		deactivate_apple_tunnel =
-			tbv_qp_state_uses_transport(cur_state) &&
-			!tbv_qp_state_uses_transport(next_state);
-	}
-	spin_unlock_irqrestore(&tqp->lock, flags);
-	if (ret)
-		return ret;
-
-	if (activate_apple_tunnel) {
-		ret = tbv_qp_ensure_apple_tunnel(tqp,
-						 &apple_tunnel_acquired);
-		if (ret)
-			return ret;
-	}
 
 	spin_lock_irqsave(&tqp->lock, flags);
 	ret = tbv_validate_modify_qp_locked(tqp, attr, attr_mask, &cur_state,
@@ -3090,18 +2716,10 @@ static int tbv_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 		tqp->attr.max_rd_atomic = attr->max_rd_atomic;
 out_unlock:
 	spin_unlock_irqrestore(&tqp->lock, flags);
-	if (ret) {
-		if (apple_tunnel_acquired)
-			tbv_qp_release_apple_tunnel(tqp);
+	if (ret)
 		return ret;
-	}
-	if (flush_error || deactivate_apple_tunnel) {
+	if (flush_error)
 		tbv_qp_flush_error(tqp);
-		if (deactivate_apple_tunnel)
-			flush_work(&tqp->apple_sq_work);
-	}
-	if (deactivate_apple_tunnel)
-		tbv_qp_release_apple_tunnel(tqp);
 	if (attr_mask & (IB_QP_STATE | IB_QP_DEST_QPN))
 		tbv_qp_advertise_recv_credits(tqp);
 	return 0;
@@ -3136,101 +2754,6 @@ static void tbv_send_ctx_put(struct tbv_send_ctx *send)
 	}
 }
 
-static void tbv_apple_sq_release_slot(struct tbv_send_ctx *send)
-{
-	struct tbv_qp *tqp = send->tqp;
-	unsigned long flags;
-	bool wake = false;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	if (send->apple_sq_counted) {
-		send->apple_sq_counted = false;
-		if (tqp->apple_sq_outstanding)
-			tqp->apple_sq_outstanding--;
-		wake = true;
-	}
-	spin_unlock_irqrestore(&tqp->lock, flags);
-
-	if (wake)
-		wake_up_all(&tqp->apple_tx_wait);
-}
-
-static int tbv_apple_sq_reserve_slot(struct tbv_qp *tqp,
-				     struct tbv_send_ctx *send)
-{
-	unsigned long flags;
-	u32 max_wr = tqp->init_attr.cap.max_send_wr;
-	int ret = 0;
-
-	if (!max_wr)
-		max_wr = 1;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	if (tqp->closing || tqp->state == IB_QPS_ERR) {
-		ret = -ECANCELED;
-	} else if (tqp->apple_sq_outstanding >= max_wr) {
-		ret = -ENOMEM;
-		atomic64_inc(&tqp->owner->apple_sq_full);
-	} else {
-		tqp->apple_sq_outstanding++;
-		send->apple_sq_counted = true;
-	}
-	spin_unlock_irqrestore(&tqp->lock, flags);
-
-	return ret;
-}
-
-static void tbv_apple_sq_free_entry(struct tbv_apple_sq_entry *entry)
-{
-	if (!entry)
-		return;
-
-	kvfree(entry->payload);
-	kfree(entry);
-}
-
-static void tbv_apple_sq_queue_entry(struct tbv_qp *tqp,
-				     struct tbv_apple_sq_entry *entry)
-{
-	struct workqueue_struct *wq = tqp->owner && tqp->owner->workqueue ?
-				      tqp->owner->workqueue : system_unbound_wq;
-	unsigned long flags;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	list_add_tail(&entry->node, &tqp->apple_sq);
-	spin_unlock_irqrestore(&tqp->lock, flags);
-
-	atomic64_inc(&tqp->owner->apple_sq_queued);
-	queue_work(wq, &tqp->apple_sq_work);
-}
-
-static struct tbv_apple_sq_entry *tbv_apple_sq_pop(struct tbv_qp *tqp)
-{
-	struct tbv_apple_sq_entry *entry = NULL;
-	unsigned long flags;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	if (!list_empty(&tqp->apple_sq)) {
-		entry = list_first_entry(&tqp->apple_sq,
-					 struct tbv_apple_sq_entry, node);
-		list_del_init(&entry->node);
-	}
-	spin_unlock_irqrestore(&tqp->lock, flags);
-	return entry;
-}
-
-static void tbv_qp_release_apple_tx_window(struct tbv_qp *tqp,
-					   bool wr_acquired,
-					   u32 frames_acquired)
-{
-	if (wr_acquired)
-		atomic_dec(&tqp->apple_tx_inflight);
-	if (frames_acquired)
-		atomic_sub(frames_acquired, &tqp->apple_tx_inflight_frames);
-	if (wr_acquired || frames_acquired)
-		wake_up_all(&tqp->apple_tx_wait);
-}
-
 static bool tbv_send_complete(struct tbv_send_ctx *send, int status)
 {
 	struct tbv_qp *tqp = send->tqp;
@@ -3254,17 +2777,8 @@ static bool tbv_send_complete(struct tbv_send_ctx *send, int status)
 	 * send reference. Skip the cancel walk then; it scans the whole path
 	 * queue and every ring slot under the path's TX lock.
 	 */
-	if (status || send->retries || send->rnr_retries ||
-	    tbv_qp_uses_apple_transport(tqp))
+	if (status || send->retries || send->rnr_retries)
 		tbv_cancel_send_ctx_packets(send);
-	tbv_apple_sq_release_slot(send);
-
-	if (send->apple_window_acquired) {
-		tbv_qp_release_apple_tx_window(tqp,
-						send->apple_window_wr_acquired,
-						send->apple_window_frames);
-		send->apple_window_acquired = false;
-	}
 
 	if (send->signaled || status) {
 		struct tbv_cq *send_cq =
@@ -3532,49 +3046,6 @@ static void tbv_send_tx_done(void *ctx, int status)
 		}
 	}
 	tbv_send_ctx_put(send);
-}
-
-static void tbv_apple_send_complete_work(struct work_struct *work)
-{
-	struct tbv_send_ctx *send =
-		container_of(to_delayed_work(work), struct tbv_send_ctx,
-			     apple_complete_work);
-
-	tbv_send_complete(send, send->apple_complete_status);
-	tbv_send_ctx_put(send);
-}
-
-static void tbv_apple_complete_ordered_sends(struct tbv_qp *tqp,
-					     struct list_head *complete)
-{
-	while (!list_empty(complete)) {
-		struct tbv_send_ctx *send =
-			list_first_entry(complete, struct tbv_send_ctx, node);
-		int status = send->completion_status;
-
-		list_del_init(&send->node);
-		if (!status) {
-			u32 delay_us = READ_ONCE(apple_tx_completion_delay_us);
-
-			if (delay_us) {
-				struct workqueue_struct *wq =
-					tqp->owner && tqp->owner->workqueue ?
-						tqp->owner->workqueue :
-						system_unbound_wq;
-				unsigned long delay =
-					max_t(unsigned long, 1,
-					      usecs_to_jiffies(delay_us));
-
-				send->apple_complete_status = 0;
-				queue_delayed_work(wq, &send->apple_complete_work,
-						   delay);
-				continue;
-			}
-		}
-
-		tbv_send_complete(send, status);
-		tbv_send_ctx_put(send);
-	}
 }
 
 static bool tbv_qp_timeout_reap_tx(struct tbv_qp *tqp,
@@ -4234,202 +3705,6 @@ static int tbv_copy_send_range(const struct tbv_send_segment *segs, int nsegs,
 	}
 
 	return -EFAULT;
-}
-
-static void tbv_apple_send_tx_done(void *ctx, int status)
-{
-	struct tbv_send_ctx *send = ctx;
-	struct tbv_qp *tqp = send->tqp;
-	bool last;
-
-	last = atomic_dec_and_test(&send->apple_pending);
-	wake_up_all(&tqp->apple_tx_wait);
-	if (status || last) {
-		LIST_HEAD(complete);
-
-		if (tbv_qp_complete_send_ordered(tqp, send->psn, status,
-						 &complete, NULL))
-			tbv_apple_complete_ordered_sends(tqp, &complete);
-	}
-
-	tbv_send_ctx_put(send);
-}
-
-static int tbv_apple_send_fill(void *ctx, void *dst, u32 len)
-{
-	struct tbv_apple_send_fill *fill = ctx;
-	u32 valid_len = fill->payload_len;
-	__le32 crc_le;
-
-	if (fill->append_crc) {
-		if (valid_len > U32_MAX - sizeof(crc_le))
-			return -EINVAL;
-		valid_len += sizeof(crc_le);
-	}
-	if (valid_len > len)
-		return -EINVAL;
-
-	memcpy(dst, fill->payload, fill->payload_len);
-	if (fill->append_crc) {
-		crc_le = cpu_to_le32(fill->crc);
-		memcpy((u8 *)dst + fill->payload_len, &crc_le,
-		       sizeof(crc_le));
-	}
-	if (valid_len < len)
-		memset((u8 *)dst + valid_len, 0, len - valid_len);
-	return 0;
-}
-
-static int tbv_post_apple_send_piece(struct tbv_qp *tqp,
-				     struct tbv_path *path,
-				     struct tbv_send_ctx *ctx,
-				     const void *payload, u32 payload_len,
-				     u32 wire_len, u8 sof, u8 eof,
-				     bool append_crc, u32 crc,
-				     tbv_path_tx_done_fn done, void *done_ctx)
-{
-	struct tbv_apple_send_fill fill = {
-		.payload = payload,
-		.payload_len = payload_len,
-		.crc = crc,
-		.append_crc = append_crc,
-	};
-	int ret;
-
-	tbv_send_ctx_get(ctx);
-	atomic64_inc(&tqp->owner->data_wr_path_send);
-	/* tbv_apple_sq_transmit() reserved this frame. */
-	ret = tbv_path_send_marked_fill(path, wire_len, sof, eof,
-					TBV_PATH_SEND_DEFER |
-					TBV_PATH_SEND_RESERVED,
-					tbv_apple_send_fill, &fill,
-					done, done_ctx);
-	if (ret) {
-		tbv_send_ctx_put(ctx);
-		atomic64_inc(&tqp->owner->data_wr_path_send_error);
-	}
-	return ret;
-}
-
-static int tbv_post_apple_send_frame(struct tbv_qp *tqp,
-				     struct tbv_path *path,
-				     struct tbv_send_ctx *ctx,
-				     const void *payload,
-				     u32 payload_len, u8 sof, u8 eof,
-				     tbv_path_tx_done_fn done,
-				     void *done_ctx)
-{
-	return tbv_post_apple_send_piece(tqp, path, ctx, payload,
-					 payload_len, payload_len, sof, eof,
-					 false, 0, done, done_ctx);
-}
-
-static int tbv_post_apple_send(struct tbv_qp *tqp, const struct ib_send_wr *wr)
-{
-	struct tbv_send_segment segs[TBV_IBDEV_MAX_SGE];
-	struct tbv_apple_sq_entry *entry = NULL;
-	struct tbv_send_ctx *ctx = NULL;
-	unsigned long flags;
-	u32 total_len = 0;
-	int nsegs = 0;
-	void *payload = NULL;
-	int ret;
-
-	if (tqp->type != IB_QPT_UC)
-		return -EOPNOTSUPP;
-	if (wr->opcode != IB_WR_SEND)
-		return -EOPNOTSUPP;
-	if (!tbv_qp_has_dest_qp(tqp))
-		return -EINVAL;
-	if (!tbv_qp_get_apple_send_live(tqp))
-		return -EINVAL;
-
-	atomic64_inc(&tqp->owner->data_wr_send);
-	atomic64_inc(&tqp->owner->data_wr_op_send);
-	atomic64_inc(&tqp->owner->data_wr_live);
-
-	ret = tbv_prepare_send_segments(tqp, wr, segs, &nsegs, &total_len);
-	if (ret) {
-		atomic64_inc(&tqp->owner->data_wr_copy_error);
-		goto err_put_qp;
-	}
-	if (!total_len) {
-		ret = -EMSGSIZE;
-		goto err_release_segs;
-	}
-
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
-	if (!ctx) {
-		ret = -ENOMEM;
-		goto err_release_segs;
-	}
-	ctx->tqp = tqp;
-	refcount_set(&ctx->refs, 1);
-	spin_lock_init(&ctx->lock);
-	ctx->wr_id = wr->wr_id;
-	ctx->signaled = !!(wr->send_flags & IB_SEND_SIGNALED);
-	ctx->wc_opcode = IB_WC_SEND;
-	INIT_DELAYED_WORK(&ctx->apple_complete_work,
-			  tbv_apple_send_complete_work);
-	INIT_LIST_HEAD(&ctx->node);
-	INIT_LIST_HEAD(&ctx->retry_node);
-	atomic_set(&ctx->tx_pending, 0);
-
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
-	if (!entry) {
-		ret = -ENOMEM;
-		goto err_put_ctx;
-	}
-
-	payload = kvzalloc(total_len, GFP_KERNEL);
-	if (!payload) {
-		ret = -ENOMEM;
-		goto err_free_entry;
-	}
-
-	ret = tbv_copy_send_range(segs, nsegs, 0, payload, total_len);
-	if (ret) {
-		atomic64_inc(&tqp->owner->data_wr_copy_error);
-		goto err_free_payload;
-	}
-	atomic64_inc(&tqp->owner->data_wr_copied);
-
-	ret = tbv_apple_sq_reserve_slot(tqp, ctx);
-	if (ret)
-		goto err_free_payload;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	ctx->psn = tqp->send_psn & TBV_PSN_MASK;
-	tqp->send_psn = tbv_psn_next(ctx->psn);
-	spin_unlock_irqrestore(&tqp->lock, flags);
-
-	INIT_LIST_HEAD(&entry->node);
-	entry->send = ctx;
-	entry->payload = payload;
-	entry->length = total_len;
-	payload = NULL;
-
-	tbv_qp_queue_send(tqp, ctx);
-	tbv_apple_sq_queue_entry(tqp, entry);
-	tbv_release_send_segments(segs, nsegs);
-	atomic64_inc(&tqp->owner->data_tx_accepted);
-	return 0;
-
-err_free_payload:
-	kvfree(payload);
-err_free_entry:
-	kfree(entry);
-	tbv_apple_sq_release_slot(ctx);
-err_put_ctx:
-	tbv_send_ctx_put(ctx);
-	tbv_release_send_segments(segs, nsegs);
-	return ret;
-err_release_segs:
-	tbv_release_send_segments(segs, nsegs);
-err_put_qp:
-	atomic64_dec(&tqp->owner->data_wr_live);
-	tbv_qp_put(tqp);
-	return ret;
 }
 
 static void tbv_send_page_stream_put(struct tbv_send_page_stream *stream)
@@ -5588,9 +4863,6 @@ static int tbv_post_send_one(struct tbv_qp *tqp, const struct ib_send_wr *wr)
 	if (tqp->type == IB_QPT_GSI)
 		return tbv_post_gsi_send(tqp, wr);
 
-	if (tbv_qp_uses_apple_transport(tqp))
-		return tbv_post_apple_send(tqp, wr);
-
 	if (wr->opcode == IB_WR_RDMA_READ && tbv_dmabuf_verbs_enabled())
 		return -EOPNOTSUPP;
 	if (wr->opcode == IB_WR_RDMA_READ)
@@ -5899,8 +5171,6 @@ static int tbv_post_recv_impl(struct ib_qp *qp, const struct ib_recv_wr *wr,
 		tbv_dmabuf_recv_posted(tqp);
 	if (posted) {
 		mutex_lock(&tqp->rx_lock);
-		if (tbv_qp_uses_apple_transport(tqp))
-			tbv_apple_rx_drain_pending_locked(tqp->owner, tqp);
 		tbv_rx_drain_reorder_locked(tqp->owner, tqp, NULL);
 		mutex_unlock(&tqp->rx_lock);
 	}
@@ -5952,418 +5222,6 @@ static bool tbv_qp_pop_recv(struct tbv_qp *tqp, struct tbv_recv_wqe *wqe)
 	atomic_dec(&tqp->owner->verbs_recv_wqes);
 	spin_unlock_irqrestore(&tqp->lock, flags);
 	return true;
-}
-
-static void tbv_apple_pending_reset(struct tbv_apple_pending_rx *p)
-{
-	p->delivered = 0;
-	p->status = IB_WC_SUCCESS;
-	p->active = false;
-	p->ready = false;
-}
-
-static void tbv_apple_pending_release(struct tbv_qp *tqp,
-				      struct tbv_apple_pending_rx *p)
-{
-	if (p->delivered) {
-		if (tqp->apple_pending_bytes >= p->delivered)
-			tqp->apple_pending_bytes -= p->delivered;
-		else
-			tqp->apple_pending_bytes = 0;
-	}
-	tbv_apple_pending_reset(p);
-}
-
-static void tbv_qp_flush_apple_pending(struct tbv_qp *tqp)
-{
-	u32 i;
-
-	tqp->apple_rx_discard = false;
-	if (!tqp->apple_pending) {
-		tqp->apple_pending_head = 0;
-		tqp->apple_pending_tail = 0;
-		tqp->apple_pending_ready_count = 0;
-		tqp->apple_pending_bytes = 0;
-		tqp->apple_pending_active = -1;
-		return;
-	}
-
-	for (i = 0; i < tqp->apple_pending_slot_count; i++) {
-		struct tbv_apple_pending_rx *p = &tqp->apple_pending[i];
-
-		if ((p->active || p->ready) && tqp->owner)
-			atomic64_inc(&tqp->owner->data_rx_pending_discarded);
-		tbv_apple_pending_release(tqp, p);
-	}
-	tqp->apple_pending_head = 0;
-	tqp->apple_pending_tail = 0;
-	tqp->apple_pending_ready_count = 0;
-	tqp->apple_pending_bytes = 0;
-	tqp->apple_pending_active = -1;
-}
-
-static struct tbv_apple_pending_rx *
-tbv_apple_pending_active_locked(struct tbv_state *state, struct tbv_qp *tqp)
-{
-	struct tbv_apple_pending_rx *p;
-
-	if (tqp->apple_pending_active >= 0)
-		return &tqp->apple_pending[tqp->apple_pending_active];
-	if (!tqp->apple_pending || !tqp->apple_pending_slot_count)
-		return NULL;
-	if (tqp->apple_pending_ready_count >= tqp->apple_pending_slot_count)
-		return NULL;
-	if (!READ_ONCE(apple_rx_pending_bytes))
-		return NULL;
-	if (!READ_ONCE(apple_rx_pending_total_bytes))
-		return NULL;
-
-	p = &tqp->apple_pending[tqp->apple_pending_tail];
-	tbv_apple_pending_reset(p);
-	p->active = true;
-	tqp->apple_pending_active = tqp->apple_pending_tail;
-	atomic64_inc(&state->data_rx_reorder_buffered);
-	return p;
-}
-
-static void tbv_apple_pending_finish_locked(struct tbv_qp *tqp)
-{
-	struct tbv_apple_pending_rx *p;
-
-	if (tqp->apple_pending_active < 0)
-		return;
-
-	p = &tqp->apple_pending[tqp->apple_pending_active];
-	p->active = false;
-	p->ready = true;
-	tqp->apple_pending_active = -1;
-	tqp->apple_pending_ready_count++;
-	tqp->apple_pending_tail = (tqp->apple_pending_tail + 1) %
-				  tqp->apple_pending_slot_count;
-}
-
-static void tbv_apple_rx_push_wc(struct tbv_qp *tqp,
-				 const struct tbv_recv_wqe *wqe, u32 byte_len,
-				 int status)
-{
-	struct tbv_cq *recv_cq;
-	struct ib_wc wc = {};
-
-	recv_cq = container_of(tqp->base.recv_cq, struct tbv_cq, base);
-	tbv_wc_set_recv_wr(&wc, wqe);
-	wc.status = status;
-	wc.opcode = IB_WC_RECV;
-	wc.qp = &tqp->base;
-	wc.byte_len = byte_len;
-	wc.src_qp = tqp->attr.dest_qp_num;
-	wc.pkey_index = 0;
-	wc.port_num = 1;
-	if (tbv_cq_push(recv_cq, &wc)) {
-		/* tbv_cq_push already queued QP error handling. */
-		atomic64_inc(&tqp->owner->apple_rx_cq_overflow);
-		pr_warn_ratelimited("apple rx CQ overflow qpn=%u byte_len=%u\n",
-				    tqp->base.qp_num, byte_len);
-	}
-}
-
-static void tbv_apple_rx_drain_pending_locked(struct tbv_state *state,
-					      struct tbv_qp *tqp)
-{
-	while (tqp->apple_pending_ready_count) {
-		struct tbv_apple_pending_rx *p;
-		struct tbv_recv_wqe wqe;
-		u32 copy_len;
-		u32 delivered = 0;
-		int status;
-		int ret;
-
-		if (!tbv_qp_pop_recv(tqp, &wqe))
-			return;
-
-		p = &tqp->apple_pending[tqp->apple_pending_head];
-		copy_len = min_t(u32, p->delivered, wqe.length);
-		status = p->status;
-		ret = tbv_rx_copy_to_wqe(state, &wqe, 0, p->buf, copy_len,
-					 &delivered);
-		if (ret)
-			status = IB_WC_LOC_PROT_ERR;
-		else if (p->delivered > wqe.length)
-			status = IB_WC_LOC_LEN_ERR;
-
-		if (status == IB_WC_LOC_LEN_ERR)
-			atomic64_inc(&state->apple_rx_len_overrun);
-		if (tbv_apple_rx_trace_take())
-			pr_info("apple rx drain qpn=%u pending_len=%u copy_len=%u delivered=%u wqe_len=%u status=%d head=%u ready=%u recv_count=%u wr_id=%llu\n",
-				tqp->base.qp_num, p->delivered, copy_len,
-				delivered, wqe.length, status,
-				tqp->apple_pending_head,
-				tqp->apple_pending_ready_count,
-				tqp->recv_count, wqe.wr_id);
-
-		tbv_apple_rx_push_wc(tqp, &wqe, delivered, status);
-		atomic64_inc(&state->data_rx_send);
-		atomic64_inc(&state->data_rx_op_send);
-		atomic64_inc(&state->data_rx_reorder_delivered);
-
-		tbv_apple_pending_release(tqp, p);
-		tqp->apple_pending_head = (tqp->apple_pending_head + 1) %
-					  tqp->apple_pending_slot_count;
-		tqp->apple_pending_ready_count--;
-	}
-}
-
-static int tbv_apple_rx_copy_piece_to_buf(struct tbv_qp *tqp,
-					  struct tbv_apple_pending_rx *p,
-					  const void *src, u32 len,
-					  u32 *user_len)
-{
-	u32 max_bytes;
-	u32 required;
-	u32 total_limit;
-	u32 total_required;
-
-	if (!len)
-		return 0;
-	if (check_add_overflow(p->delivered, len, &required))
-		return -EMSGSIZE;
-
-	max_bytes = min_t(u32, READ_ONCE(apple_rx_pending_bytes),
-			  TBV_APPLE_MAX_MSG_SIZE);
-	if (!max_bytes || required > max_bytes)
-		return -EMSGSIZE;
-
-	total_limit = READ_ONCE(apple_rx_pending_total_bytes);
-	if (!total_limit ||
-	    check_add_overflow(tqp->apple_pending_bytes, len, &total_required) ||
-	    total_required > total_limit)
-		return -ENOSPC;
-
-	if (required > p->capacity) {
-		u32 new_capacity = p->capacity ? p->capacity : PAGE_SIZE;
-		void *buf;
-
-		while (new_capacity < required) {
-			u32 doubled;
-
-			if (check_mul_overflow(new_capacity, 2u, &doubled) ||
-			    doubled > max_bytes) {
-				new_capacity = max_bytes;
-				break;
-			}
-			new_capacity = doubled;
-		}
-		if (new_capacity < required)
-			return -EMSGSIZE;
-
-		buf = kvzalloc(new_capacity, GFP_KERNEL);
-		if (!buf)
-			return -ENOMEM;
-		if (p->buf && p->delivered)
-			memcpy(buf, p->buf, p->delivered);
-		kvfree(p->buf);
-		p->buf = buf;
-		p->capacity = new_capacity;
-	}
-	memcpy((u8 *)p->buf + p->delivered, src, len);
-	p->delivered += len;
-	tqp->apple_pending_bytes += len;
-	*user_len += len;
-	return 0;
-}
-
-static bool tbv_apple_rx_raw_crc_trailer(u8 eof)
-{
-	return eof == 2 || eof == 3;
-}
-
-static int tbv_apple_rx_wire_user_len(u32 len, u8 eof, u32 *user_len)
-{
-	if (tbv_path_apple_rx_raw_mode() &&
-	    tbv_apple_rx_raw_crc_trailer(eof)) {
-		if (len < sizeof(__le32))
-			return -EINVAL;
-		*user_len = len - sizeof(__le32);
-	} else {
-		*user_len = len;
-	}
-	return 0;
-}
-
-static int tbv_apple_rx_verify_raw_crc(struct tbv_apple_pending_rx *p,
-				       const void *payload, u32 len, u8 eof)
-{
-	const u8 *chunk;
-	__le32 expected_le;
-	u32 expected;
-	u32 actual;
-
-	if (!tbv_path_apple_rx_raw_mode() ||
-	    !tbv_apple_rx_raw_crc_trailer(eof))
-		return 0;
-	if (len < sizeof(expected_le) || !p->buf)
-		return -EINVAL;
-	if (p->delivered < TBV_APPLE_FRAME_SIZE ||
-	    p->delivered % TBV_APPLE_FRAME_SIZE)
-		return -EPROTO;
-
-	memcpy(&expected_le, (const u8 *)payload + len - sizeof(expected_le),
-	       sizeof(expected_le));
-	expected = le32_to_cpu(expected_le);
-	chunk = (const u8 *)p->buf + p->delivered - TBV_APPLE_FRAME_SIZE;
-	actual = crc32c(~0u, chunk, TBV_APPLE_FRAME_SIZE) ^ ~0u;
-
-	return actual == expected ? 0 : -EBADMSG;
-}
-
-static int tbv_apple_rx_copy_frame_to_buf(struct tbv_qp *tqp,
-					  struct tbv_apple_pending_rx *p,
-					  const void *payload, u32 len, u8 eof,
-					  u32 *out_user_len)
-{
-	int ret;
-	u32 copy_len;
-	u32 user_len = 0;
-
-	ret = tbv_apple_rx_wire_user_len(len, eof, &copy_len);
-	if (ret)
-		return ret;
-
-	ret = tbv_apple_rx_copy_piece_to_buf(tqp, p, payload, copy_len,
-					     &user_len);
-	if (ret)
-		return ret;
-	ret = tbv_apple_rx_verify_raw_crc(p, payload, len, eof);
-	if (ret)
-		return ret;
-	*out_user_len = user_len;
-	return 0;
-}
-
-void tbv_ibdev_rx_apple_frame(struct tbv_state *state,
-			      const struct tbv_path *path,
-			      const void *payload, u32 len, u8 sof, u8 eof)
-{
-	struct tbv_apple_pending_rx *pending;
-	struct tbv_qp *tqp;
-	bool starts_message;
-	bool raw_rx;
-	u32 qpn;
-	u32 user_len = 0;
-	int ret;
-
-	if (!state || !state->verbs_registered)
-		return;
-	if (!payload || !len || len > TBV_APPLE_FRAME_SIZE) {
-		atomic64_inc(&state->data_rx_bad_frame);
-		return;
-	}
-	raw_rx = tbv_path_apple_rx_raw_mode();
-
-	qpn = tbv_apple_qpn_from_path(path);
-	if (sof)
-		atomic64_inc(&state->apple_rx_sof);
-	if (eof == 3)
-		atomic64_inc(&state->apple_rx_eof3);
-	else
-		atomic64_inc(&state->apple_rx_eof_other);
-
-	tqp = tbv_qp_get_by_num(state, qpn);
-	if (!tqp) {
-		atomic64_inc(&state->data_rx_no_qp);
-		return;
-	}
-
-	/*
-	 * macOS emits short single-frame SENDs as EOF=3 without SOF. Treat
-	 * those as a complete message start, but keep rejecting idle non-final
-	 * fragments because there is no Apple-side sequence number to recover
-	 * the missing prefix.
-	 */
-	starts_message = sof || raw_rx || eof == TBV_DATA_PDF_FRAME_END;
-
-	/*
-	 * Apple frames carry no QPN; demux is by inbound hop ID only, and
-	 * every Apple path uses the same hop. Make sure this QP is bound to
-	 * the rail the frame actually arrived on so a second Apple peer can
-	 * never feed another peer's QP.
-	 */
-	if (!tqp->rail || tqp->rail != path->rail) {
-		atomic64_inc(&state->apple_rx_rail_mismatch);
-		atomic64_inc(&state->data_rx_no_qp);
-		pr_warn_ratelimited("apple rx frame from unbound rail qpn=%u\n",
-				    qpn);
-		tbv_qp_put(tqp);
-		return;
-	}
-
-	mutex_lock(&tqp->rx_lock);
-	if (tqp->apple_pending_ready_count)
-		tbv_apple_rx_drain_pending_locked(state, tqp);
-	if (tqp->apple_rx_discard) {
-		/*
-		 * Resynchronizing after a dropped message start: swallow
-		 * frames up to the EOF=3 boundary so the tail of a truncated
-		 * message is never delivered as a complete message.
-		 */
-		atomic64_inc(&state->apple_rx_resync_dropped);
-		if (eof == 3)
-			tqp->apple_rx_discard = false;
-		mutex_unlock(&tqp->rx_lock);
-		tbv_qp_put(tqp);
-		return;
-	}
-	if (sof && tqp->apple_pending_active >= 0)
-		atomic64_inc(&state->apple_rx_sof_while_active);
-	if (tqp->apple_pending_active < 0 && !starts_message) {
-		atomic64_inc(&state->apple_rx_no_sof_when_idle);
-		atomic64_inc(&state->data_rx_bad_frame);
-		mutex_unlock(&tqp->rx_lock);
-		tbv_qp_put(tqp);
-		return;
-	}
-
-	pending = tbv_apple_pending_active_locked(state, tqp);
-	if (!pending) {
-		atomic64_inc(&state->data_rx_no_recv);
-		atomic64_inc(&state->data_rx_reorder_dropped);
-		/*
-		 * A message-start frame was dropped. Unless this frame also
-		 * carried the message's EOF=3, the rest of the message is
-		 * still inbound and must be discarded at the boundary, not
-		 * delivered as a fresh (truncated) message.
-		 */
-		if (eof != 3)
-			tqp->apple_rx_discard = true;
-		mutex_unlock(&tqp->rx_lock);
-		tbv_qp_put(tqp);
-		return;
-	}
-
-	if (tbv_apple_rx_trace_take())
-		pr_info("apple rx qpn=%u sof=%u eof=%u len=%u pending_len=%u recv_count=%u pending_active=%d pending_ready=%u\n",
-			qpn, sof, eof, len, pending->delivered,
-			tqp->recv_count, tqp->apple_pending_active,
-			tqp->apple_pending_ready_count);
-
-	ret = tbv_apple_rx_copy_frame_to_buf(tqp, pending, payload, len, eof,
-					     &user_len);
-	if (ret) {
-		atomic64_inc(&state->data_rx_bad_frame);
-		if (tbv_path_apple_rx_raw_mode() &&
-		    tbv_apple_rx_raw_crc_trailer(eof))
-			atomic64_inc(&state->apple_rx_raw_crc_error);
-		pending->status = (ret == -EMSGSIZE || ret == -ENOSPC) ?
-			IB_WC_LOC_LEN_ERR : IB_WC_LOC_PROT_ERR;
-	}
-
-	if (eof == 3) {
-		tbv_apple_pending_finish_locked(tqp);
-		tbv_apple_rx_drain_pending_locked(state, tqp);
-	} else if (!pending->active) {
-		atomic64_inc(&state->apple_rx_eof_without_active);
-	}
-	mutex_unlock(&tqp->rx_lock);
-	tbv_qp_put(tqp);
 }
 
 static int tbv_send_control_frame_on_qp(struct tbv_qp *tqp,
@@ -6578,9 +5436,6 @@ static void tbv_qp_advertise_recv_credits(struct tbv_qp *tqp)
 	if (tbv_dmabuf_verbs_enabled())
 		return; /* PREPARE observes the receive queue directly. */
 
-	if (tbv_qp_uses_apple_transport(tqp))
-		return;
-
 	spin_lock_irqsave(&tqp->lock, flags);
 	if (tqp->closing || !tqp->dest_qp_known ||
 	    tqp->recv_count <= tqp->recv_credits_advertised) {
@@ -6646,401 +5501,6 @@ static void tbv_qp_return_remote_recv_credit(struct tbv_qp *tqp)
 	wake_up_all(&tqp->credit_wait);
 }
 
-static bool tbv_qp_apple_tx_window_ok_locked(struct tbv_qp *tqp,
-					     bool exclusive,
-					     unsigned int max_wr,
-					     unsigned int max_frames,
-					     u32 frame_charge)
-{
-	int cur_wr = atomic_read(&tqp->apple_tx_inflight);
-	int cur_frames = atomic_read(&tqp->apple_tx_inflight_frames);
-
-	return tbv_apple_tx_window_ok(cur_wr, cur_frames, exclusive, max_wr,
-				      max_frames, frame_charge);
-}
-
-static bool tbv_qp_try_acquire_apple_tx_window(struct tbv_qp *tqp, u32 frames,
-					       bool *wr_acquired,
-					       u32 *frames_acquired,
-					       int *ret)
-{
-	unsigned int max_wr = READ_ONCE(apple_tx_max_inflight_wr);
-	unsigned int max_frames = READ_ONCE(apple_tx_max_inflight_frames);
-	u32 frame_charge = tbv_apple_tx_frame_charge(frames, max_frames);
-	bool exclusive = tbv_apple_tx_requires_exclusive_window(frames);
-	unsigned long flags;
-	bool acquired = false;
-
-	if (!exclusive && !max_wr && !max_frames) {
-		*wr_acquired = false;
-		*frames_acquired = 0;
-		*ret = 0;
-		return true;
-	}
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	if (tqp->closing || !tbv_qp_state_uses_transport(tqp->state)) {
-		*ret = -ECANCELED;
-		acquired = true;
-	} else {
-		if (tbv_qp_apple_tx_window_ok_locked(tqp, exclusive, max_wr,
-						     max_frames, frame_charge)) {
-			if (max_wr || exclusive)
-				atomic_inc(&tqp->apple_tx_inflight);
-			if (frame_charge)
-				atomic_add(frame_charge,
-					   &tqp->apple_tx_inflight_frames);
-			*wr_acquired = !!max_wr || exclusive;
-			*frames_acquired = frame_charge;
-			*ret = 0;
-			acquired = true;
-		}
-	}
-	spin_unlock_irqrestore(&tqp->lock, flags);
-	return acquired;
-}
-
-static bool tbv_qp_apple_tx_window_available(struct tbv_qp *tqp, u32 frames)
-{
-	unsigned int max_wr = READ_ONCE(apple_tx_max_inflight_wr);
-	unsigned int max_frames = READ_ONCE(apple_tx_max_inflight_frames);
-	u32 frame_charge = tbv_apple_tx_frame_charge(frames, max_frames);
-	bool exclusive = tbv_apple_tx_requires_exclusive_window(frames);
-	unsigned long flags;
-	bool available;
-
-	if (!exclusive && !max_wr && !max_frames)
-		return true;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	if (tqp->closing || !tbv_qp_state_uses_transport(tqp->state)) {
-		available = true;
-	} else {
-		available = tbv_qp_apple_tx_window_ok_locked(
-			tqp, exclusive, max_wr, max_frames, frame_charge);
-	}
-	spin_unlock_irqrestore(&tqp->lock, flags);
-	return available;
-}
-
-static int tbv_qp_wait_apple_tx_window(struct tbv_qp *tqp, u32 frames,
-				       bool *wr_acquired,
-				       u32 *frames_acquired)
-{
-	int ret;
-
-	for (;;) {
-		ret = -EAGAIN;
-		if (tbv_qp_try_acquire_apple_tx_window(tqp, frames,
-						       wr_acquired,
-						       frames_acquired,
-						       &ret))
-			return ret;
-
-		wait_event_timeout(tqp->apple_tx_wait,
-				   tbv_qp_apple_tx_window_available(tqp,
-								     frames),
-				   msecs_to_jiffies(100));
-	}
-}
-
-static bool tbv_qp_apple_sq_stopping(struct tbv_qp *tqp)
-{
-	unsigned long flags;
-	bool stopping;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	stopping = tqp->closing || !tbv_qp_state_uses_transport(tqp->state);
-	spin_unlock_irqrestore(&tqp->lock, flags);
-	return stopping;
-}
-
-static int tbv_apple_sq_get_tx_resources(struct tbv_qp *tqp,
-					 u32 window_frames,
-					 u32 reserve_frames,
-					 struct tbv_path **path_out,
-					 bool *wr_acquired,
-					 u32 *frames_acquired)
-{
-	struct tbv_path *path;
-	int ret;
-
-	*path_out = NULL;
-	*wr_acquired = false;
-	*frames_acquired = 0;
-
-	for (;;) {
-		if (tbv_qp_apple_sq_stopping(tqp))
-			return -ECANCELED;
-
-		mutex_lock(&tqp->owner->lock);
-		path = tbv_first_active_apple_path_for_qp_locked(tqp);
-		mutex_unlock(&tqp->owner->lock);
-		if (!path) {
-			atomic64_inc(&tqp->owner->data_wr_no_path);
-			return -ENOTCONN;
-		}
-
-		ret = tbv_qp_wait_apple_tx_window(tqp, window_frames,
-						  wr_acquired,
-						  frames_acquired);
-		if (ret) {
-			tbv_release_path_refs(&path, 1);
-			return ret;
-		}
-
-		ret = tbv_path_reserve_data(path, reserve_frames);
-		if (!ret) {
-			*path_out = path;
-			return 0;
-		}
-
-		tbv_qp_release_apple_tx_window(tqp, *wr_acquired,
-					       *frames_acquired);
-		*wr_acquired = false;
-		*frames_acquired = 0;
-		tbv_release_path_refs(&path, 1);
-		if (ret != -ENOMEM)
-			return ret;
-		msleep(1);
-	}
-}
-
-static int tbv_apple_raw_desc_count(u32 len, u32 *desc_count)
-{
-	u32 chunks;
-
-	if (!len || len % TBV_APPLE_FRAME_SIZE)
-		return -EMSGSIZE;
-
-	chunks = len / TBV_APPLE_FRAME_SIZE;
-	if (chunks > U32_MAX / TBV_APPLE_RAW_DESCS_PER_CHUNK)
-		return -EMSGSIZE;
-
-	*desc_count = chunks * TBV_APPLE_RAW_DESCS_PER_CHUNK;
-	return 0;
-}
-
-static int tbv_post_apple_send_raw_piece(struct tbv_qp *tqp,
-					 struct tbv_path *path,
-					 struct tbv_send_ctx *ctx,
-					 const u8 *payload,
-					 u32 payload_len, u32 wire_len,
-					 u8 sof, u8 eof, bool append_crc,
-					 u32 crc, u32 *remaining,
-					 u32 *posted)
-{
-	int ret;
-
-	ret = tbv_post_apple_send_piece(tqp, path, ctx, payload, payload_len,
-					wire_len, sof, eof, append_crc, crc,
-					tbv_apple_send_tx_done, ctx);
-	if (ret)
-		return ret;
-
-	(*remaining)--;
-	(*posted)++;
-	return 0;
-}
-
-static int tbv_apple_sq_transmit_raw_chunk(struct tbv_qp *tqp,
-					   struct tbv_path *path,
-					   struct tbv_send_ctx *ctx,
-					   const u8 *payload, u32 base,
-					   u8 tail_eof, u32 *remaining,
-					   u32 *posted)
-{
-	u32 crc = crc32c(~0u, payload + base, TBV_APPLE_FRAME_SIZE) ^ ~0u;
-	u32 piece;
-	int ret;
-
-	for (piece = 0; piece < 15; piece++) {
-		ret = tbv_post_apple_send_raw_piece(
-			tqp, path, ctx,
-			payload + base + piece * TBV_APPLE_RAW_SLOT_USER_SIZE,
-			TBV_APPLE_RAW_SLOT_USER_SIZE,
-			TBV_APPLE_RAW_SLOT_USER_SIZE,
-			0, piece == 0 ? 1 : 0, false, 0, remaining, posted);
-		if (ret)
-			return ret;
-	}
-
-	ret = tbv_post_apple_send_raw_piece(
-		tqp, path, ctx, payload + base + 15 * TBV_APPLE_RAW_SLOT_USER_SIZE,
-		TBV_APPLE_RAW_SPLIT_USER_SIZE, TBV_APPLE_RAW_SPLIT_USER_SIZE,
-		0, 0, false, 0, remaining, posted);
-	if (ret)
-		return ret;
-
-	return tbv_post_apple_send_raw_piece(
-		tqp, path, ctx,
-		payload + base + 15 * TBV_APPLE_RAW_SLOT_USER_SIZE +
-			TBV_APPLE_RAW_SPLIT_USER_SIZE,
-		TBV_APPLE_RAW_TAIL_USER_SIZE, TBV_APPLE_RAW_TAIL_USER_SIZE + 4,
-		0, tail_eof, true, crc, remaining, posted);
-}
-
-static int tbv_apple_sq_wait_frame_group(struct tbv_qp *tqp,
-					 struct tbv_send_ctx *ctx,
-					 u32 target_pending)
-{
-	for (;;) {
-		if (atomic_read(&ctx->apple_pending) <= target_pending)
-			return 0;
-		if (tbv_send_is_completed(ctx) || tbv_qp_apple_sq_stopping(tqp))
-			return -ECANCELED;
-
-		wait_event_timeout(tqp->apple_tx_wait,
-				   atomic_read(&ctx->apple_pending) <= target_pending ||
-					   tbv_send_is_completed(ctx) ||
-					   tbv_qp_apple_sq_stopping(tqp),
-				   msecs_to_jiffies(100));
-	}
-}
-
-static int tbv_apple_sq_transmit(struct tbv_qp *tqp,
-				 struct tbv_apple_sq_entry *entry)
-{
-	struct tbv_send_ctx *ctx = entry->send;
-	struct tbv_path *path = NULL;
-	bool apple_wr_acquired = false;
-	u32 apple_frames_acquired = 0;
-	u32 nfrags = DIV_ROUND_UP(entry->length, TBV_APPLE_FRAME_SIZE);
-	u32 pending_descs = nfrags;
-	u32 remaining = nfrags;
-	u32 offset = 0;
-	u32 posted = 0;
-	u32 group_posted = 0;
-	u32 group_limit = READ_ONCE(apple_tx_max_inflight_frames);
-	bool raw_mode = tbv_path_apple_tx_raw_mode();
-	bool sent_any = false;
-	int ret;
-
-	if (raw_mode) {
-		ret = tbv_apple_raw_desc_count(entry->length, &pending_descs);
-		if (ret)
-			return ret;
-		remaining = pending_descs;
-	}
-
-	ret = tbv_apple_sq_get_tx_resources(tqp, pending_descs, pending_descs,
-					    &path,
-					    &apple_wr_acquired,
-					    &apple_frames_acquired);
-	if (ret)
-		return ret;
-
-	ctx->apple_window_wr_acquired = apple_wr_acquired;
-	ctx->apple_window_frames = apple_frames_acquired;
-	ctx->apple_window_acquired = apple_wr_acquired ||
-				     apple_frames_acquired;
-	atomic_set(&ctx->apple_pending, pending_descs);
-	tbv_qp_arm_send_timeout(tqp, ctx);
-
-	while (offset < entry->length) {
-		u32 payload_len = min_t(u32, entry->length - offset,
-					TBV_APPLE_FRAME_SIZE);
-		bool last = offset + payload_len == entry->length;
-
-		if (tbv_qp_apple_sq_stopping(tqp)) {
-			ret = -ECANCELED;
-			goto err_release_reservation;
-		}
-
-		if (raw_mode) {
-			ret = tbv_apple_sq_transmit_raw_chunk(
-				tqp, path, ctx, entry->payload, offset,
-				last ? 3 : 2, &remaining, &posted);
-		} else {
-			ret = tbv_post_apple_send_frame(
-				tqp, path, ctx, (u8 *)entry->payload + offset,
-				payload_len, 1, last ? 3 : 2,
-				tbv_apple_send_tx_done, ctx);
-			if (!ret) {
-				remaining--;
-				posted++;
-			}
-		}
-		if (ret)
-			goto err_release_reservation;
-
-		group_posted++;
-		sent_any = true;
-		offset += payload_len;
-
-		if (group_limit && group_posted >= group_limit &&
-		    offset < entry->length) {
-			tbv_path_kick_tx(path);
-			ret = tbv_apple_sq_wait_frame_group(tqp, ctx,
-							    pending_descs -
-								    posted);
-			if (ret)
-				goto err_release_reservation;
-			group_posted = 0;
-		}
-	}
-
-	tbv_path_kick_tx(path);
-	tbv_release_path_refs(&path, 1);
-	atomic64_inc(&tqp->owner->apple_sq_dequeued);
-	return 0;
-
-err_release_reservation:
-	tbv_path_release_data_reservation(path, remaining);
-	if (sent_any)
-		tbv_path_kick_tx(path);
-	tbv_release_path_refs(&path, 1);
-	return ret;
-}
-
-static void tbv_apple_sq_work(struct work_struct *work)
-{
-	struct tbv_qp *tqp = container_of(work, struct tbv_qp, apple_sq_work);
-	struct tbv_apple_sq_entry *entry;
-
-	while ((entry = tbv_apple_sq_pop(tqp))) {
-		struct tbv_send_ctx *send = entry->send;
-		int ret;
-
-		tbv_send_ctx_get(send);
-		ret = tbv_apple_sq_transmit(tqp, entry);
-		tbv_send_ctx_put(send);
-		if (ret) {
-			if (tbv_qp_unqueue_send(tqp, send)) {
-				tbv_send_complete(send, ret);
-				tbv_send_ctx_put(send);
-			}
-			atomic64_inc(&tqp->owner->data_wr_path_send_error);
-		}
-		tbv_apple_sq_free_entry(entry);
-	}
-}
-
-static void tbv_qp_flush_apple_sq(struct tbv_qp *tqp)
-{
-	LIST_HEAD(flush);
-	unsigned long flags;
-
-	spin_lock_irqsave(&tqp->lock, flags);
-	list_splice_init(&tqp->apple_sq, &flush);
-	spin_unlock_irqrestore(&tqp->lock, flags);
-
-	while (!list_empty(&flush)) {
-		struct tbv_apple_sq_entry *entry =
-			list_first_entry(&flush, struct tbv_apple_sq_entry,
-					 node);
-		struct tbv_send_ctx *send = entry->send;
-
-		list_del_init(&entry->node);
-		atomic64_inc(&tqp->owner->apple_sq_flushed);
-		if (tbv_qp_unqueue_send(tqp, send)) {
-			tbv_send_complete(send, -ECANCELED);
-			tbv_send_ctx_put(send);
-		}
-		tbv_apple_sq_free_entry(entry);
-	}
-}
-
 static int tbv_copy_to_read_segments(struct tbv_read_ctx *read, u32 offset,
 				     const void *payload, u32 len)
 {
@@ -7084,6 +5544,8 @@ tbv_read_resp_find_frag_locked(struct tbv_read_ctx *read, u32 offset)
 {
 	struct tbv_rx_reorder_frag *frag;
 
+	lockdep_assert_held(&read->data_lock);
+
 	list_for_each_entry(frag, &read->resp_frags, node) {
 		if (frag->offset == offset)
 			return frag;
@@ -7099,6 +5561,8 @@ static int tbv_read_resp_store_frag_locked(struct tbv_read_ctx *read,
 	struct tbv_rx_reorder_frag *frag;
 	struct tbv_rx_reorder_frag *pos;
 	u32 new_bytes;
+
+	lockdep_assert_held(&read->data_lock);
 
 	frag = tbv_read_resp_find_frag_locked(read, offset);
 	if (frag) {
@@ -7137,6 +5601,8 @@ static int tbv_read_resp_drain_frags_locked(struct tbv_read_ctx *read)
 {
 	struct tbv_rx_reorder_frag *frag;
 	int ret;
+
+	lockdep_assert_held(&read->data_lock);
 
 	for (;;) {
 		frag = tbv_read_resp_find_frag_locked(read, read->received);
@@ -7299,6 +5765,8 @@ static bool tbv_rx_write_fragment_shape(u32 total_len, u32 offset, u32 len,
 static void tbv_rx_reorder_link_msg_locked(struct tbv_qp *tqp,
 					   struct tbv_rx_reorder_msg *msg)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	list_add_tail(&msg->node, &tqp->rx_reorder);
 	hash_add(tqp->rx_reorder_hash, &msg->hnode, msg->psn);
 	tqp->rx_reorder_count++;
@@ -7307,6 +5775,8 @@ static void tbv_rx_reorder_link_msg_locked(struct tbv_qp *tqp,
 static void tbv_rx_reorder_unlink_msg_locked(struct tbv_qp *tqp,
 					     struct tbv_rx_reorder_msg *msg)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	list_del(&msg->node);
 	hash_del(&msg->hnode);
 	tqp->rx_reorder_count--;
@@ -7323,6 +5793,8 @@ static int tbv_rx_reorder_store_fragment_locked(struct tbv_qp *tqp,
 {
 	struct tbv_rx_reorder_frag *frag;
 	u32 new_bytes;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (!len)
 		return 0;
@@ -7540,8 +6012,6 @@ static void tbv_qp_flush_error(struct tbv_qp *tqp)
 
 	tbv_dmabuf_cancel_recv(tqp);
 	wake_up_all(&tqp->credit_wait);
-	wake_up_all(&tqp->apple_tx_wait);
-	tbv_qp_flush_apple_sq(tqp);
 
 	if (tbv_dmabuf_verbs_enabled())
 		mutex_lock(&tqp->ack_lock);
@@ -7584,7 +6054,6 @@ static void tbv_qp_flush_error(struct tbv_qp *tqp)
 	tbv_rx_fail_active_write_locked(tqp->owner, tqp, NULL,
 					    IB_WC_WR_FLUSH_ERR);
 	tbv_qp_flush_reorder(tqp);
-	tbv_qp_flush_apple_pending(tqp);
 	mutex_unlock(&tqp->rx_lock);
 
 	tbv_qp_flush_recv_wqes(tqp);
@@ -7596,6 +6065,7 @@ static bool tbv_rx_deliver_reorder_msg_locked(struct tbv_state *state,
 					      struct tbv_rx_reorder_msg *msg)
 {
 	struct tbv_rx_reorder_frag *frag;
+
 	struct tbv_cq *recv_cq = container_of(tqp->base.recv_cq,
 					      struct tbv_cq, base);
 	struct tbv_recv_wqe wqe;
@@ -7604,6 +6074,8 @@ static bool tbv_rx_deliver_reorder_msg_locked(struct tbv_state *state,
 	int ack_status = 0;
 	int status;
 	bool cq_error = false;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (!tbv_qp_pop_recv(tqp, &wqe)) {
 		atomic64_inc(&state->data_rx_rnr);
@@ -7665,11 +6137,14 @@ static bool tbv_rx_deliver_reorder_write_locked(struct tbv_state *state,
 {
 	struct tbv_rx_reorder_frag *frag;
 	struct tbv_mr *mr;
+
 	struct ib_wc wc = {};
 	enum ib_wc_status status = IB_WC_SUCCESS;
 	int ack_status = TBV_NATIVE_SEND_ACK_OK;
 	bool cq_error = false;
 	int ret = 0;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (msg->with_imm && !tbv_qp_pop_recv(tqp, &tqp->rx_write.imm_wqe)) {
 		atomic64_inc(&state->data_rx_rnr);
@@ -7765,6 +6240,8 @@ static bool tbv_rx_deliver_block_write_locked(struct tbv_state *state,
 	u32 src_qp = msg->src_qp;
 	u32 psn = msg->psn;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (msg->with_imm) {
 		struct tbv_cq *recv_cq = container_of(tqp->base.recv_cq,
 						      struct tbv_cq, base);
@@ -7811,6 +6288,8 @@ static void tbv_rx_prune_stale_reorder_locked(struct tbv_state *state,
 	struct tbv_rx_reorder_msg *msg;
 	struct tbv_rx_reorder_msg *tmp;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	list_for_each_entry_safe(msg, tmp, &tqp->rx_reorder, node) {
 		if (tbv_psn_delta(msg->psn, tqp->rx_expected_psn) >= 0)
 			continue;
@@ -7832,6 +6311,8 @@ static bool tbv_rx_deliver_reorder_read_req_locked(
 	struct tbv_rx_reorder_msg *msg)
 {
 	struct tbv_native_data_header hdr = {};
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	hdr.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_REQ;
 	hdr.flags = TBV_NATIVE_DATA_F_LAST;
@@ -7855,6 +6336,8 @@ static void tbv_rx_drain_reorder_locked(struct tbv_state *state,
 					struct tbv_path *rx_path)
 {
 	struct tbv_rx_reorder_msg *msg;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	while (!tqp->rx_msg.active && !tqp->rx_write.active) {
 		tbv_rx_prune_stale_reorder_locked(state, tqp, rx_path);
@@ -7886,6 +6369,8 @@ static bool tbv_rx_consume_ordered_psn_ack_locked(struct tbv_state *state,
 						  struct tbv_path *rx_path,
 						  u32 psn, int ack_status)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (psn != tqp->rx_expected_psn)
 		return false;
 
@@ -7899,6 +6384,8 @@ static void tbv_rx_drop_reorder_msg_locked(struct tbv_state *state,
 					   struct tbv_qp *tqp,
 					   struct tbv_rx_reorder_msg *msg)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	tbv_rx_reorder_unlink_msg_locked(tqp, msg);
 	atomic64_inc(&state->data_rx_reorder_dropped);
 	tbv_rx_reorder_free_msg(msg);
@@ -7907,6 +6394,8 @@ static void tbv_rx_drop_reorder_msg_locked(struct tbv_state *state,
 static bool tbv_rx_rnr_matches_locked(const struct tbv_qp *tqp,
 				      u32 src_qp, u32 psn)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	return tqp->rx_rnr_active && tqp->rx_rnr_src_qp == src_qp &&
 	       tqp->rx_rnr_psn == (psn & TBV_PSN_MASK);
 }
@@ -7916,6 +6405,8 @@ static bool tbv_rx_rnr_is_first_retry_locked(const struct tbv_qp *tqp,
 					     u64 remote_addr,
 					     u32 frag_offset)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	return tbv_rx_rnr_matches_locked(tqp, src_qp, psn) &&
 	       tqp->rx_rnr_remote_addr == remote_addr &&
 	       tqp->rx_rnr_frag_offset == frag_offset;
@@ -7924,6 +6415,8 @@ static bool tbv_rx_rnr_is_first_retry_locked(const struct tbv_qp *tqp,
 static void tbv_rx_mark_rnr_locked(struct tbv_qp *tqp, u32 src_qp, u32 psn,
 				   u64 remote_addr, u32 frag_offset)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	tqp->rx_rnr_active = true;
 	tqp->rx_rnr_src_qp = src_qp;
 	tqp->rx_rnr_psn = psn & TBV_PSN_MASK;
@@ -7933,6 +6426,8 @@ static void tbv_rx_mark_rnr_locked(struct tbv_qp *tqp, u32 src_qp, u32 psn,
 
 static void tbv_rx_clear_rnr_locked(struct tbv_qp *tqp, u32 src_qp, u32 psn)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (tbv_rx_rnr_matches_locked(tqp, src_qp, psn))
 		tqp->rx_rnr_active = false;
 }
@@ -7942,7 +6437,10 @@ static void tbv_rx_buffer_read_req_locked(
 	const struct tbv_native_data_header *hdr, u32 psn)
 {
 	struct tbv_rx_reorder_msg *msg;
+
 	s32 delta = tbv_psn_delta(psn, tqp->rx_expected_psn);
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (delta < 0) {
 		tbv_qp_retry_read_resp(tqp, psn);
@@ -8016,12 +6514,15 @@ static void tbv_rx_buffer_fragment_locked(struct tbv_state *state,
 					  bool last, const void *payload)
 {
 	struct tbv_rx_reorder_msg *msg;
+
 	s32 delta = tbv_psn_delta(psn, tqp->rx_expected_psn);
 	bool with_imm = hdr->opcode == TBV_NATIVE_DATA_OP_SEND_IMM;
 	u32 imm_data = with_imm ? hdr->rkey : 0;
 	u32 frag_idx;
 	u32 frag_count;
 	int ret;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (delta < 0) {
 		tbv_rx_reack_duplicate_locked(state, tqp, rx_path,
@@ -8120,11 +6621,14 @@ static void tbv_rx_buffer_write_fragment_locked(
 	u32 offset, bool last, bool with_imm, const void *payload)
 {
 	struct tbv_rx_reorder_msg *msg;
+
 	s32 delta = tbv_psn_delta(psn, tqp->rx_expected_psn);
 	u32 imm_data = with_imm ? hdr->imm_data : 0;
 	u32 frag_idx;
 	u32 frag_count;
 	int ret;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (delta < 0) {
 		tbv_rx_reack_duplicate_locked(state, tqp, rx_path,
@@ -8490,6 +6994,8 @@ static int tbv_rx_finish_write_locked(struct tbv_state *state,
 						 TBV_NATIVE_SEND_ACK_ERROR;
 	bool cq_error = false;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (!wrx->active)
 		return 0;
 
@@ -8535,6 +7041,8 @@ static void tbv_rx_fail_active_write_locked(struct tbv_state *state,
 						struct tbv_path *rx_path,
 						enum ib_wc_status status)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (!tqp->rx_write.active)
 		return;
 	tbv_rx_finish_write_locked(state, tqp, rx_path, status);
@@ -9263,9 +7771,11 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 					 struct tbv_path *rx_path)
 {
 	struct tbv_read_ctx *read;
+	enum tbv_read_resp_action action;
 	u32 next_received;
 	u32 frag_idx;
 	u32 frag_count;
+	u32 taken;
 	bool last = hdr->flags & TBV_NATIVE_DATA_F_LAST;
 	int ret = 0;
 
@@ -9296,13 +7806,15 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 		ret = -EINVAL;
 		goto complete_ack;
 	}
-	if (hdr->frag_offset < read->received) {
+	action = tbv_read_resp_classify(read->received, read->retry_sent,
+					hdr->frag_offset);
+	if (action == TBV_READ_RESP_DUPLICATE) {
 		atomic64_inc(&state->data_rx_read_resp_duplicate);
 		mutex_unlock(&read->data_lock);
 		tbv_read_ctx_put(read);
 		return;
 	}
-	if (hdr->frag_offset != read->received) {
+	if (action != TBV_READ_RESP_IN_ORDER) {
 		atomic64_inc(&state->data_rx_read_resp_gap);
 		ret = tbv_read_resp_store_frag_locked(read, hdr->frag_offset,
 						      payload, hdr->length);
@@ -9310,9 +7822,12 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 			atomic64_inc(&state->data_rx_read_resp_bad_header);
 			goto complete_ack;
 		}
-		tbv_send_read_ack_on_path(tqp, rx_path, hdr->src_qp,
-					  hdr->dest_qp, hdr->psn,
-					  TBV_NATIVE_READ_ACK_RETRY);
+		if (action == TBV_READ_RESP_GAP_RETRY) {
+			read->retry_sent = true;
+			tbv_send_read_ack_on_path(tqp, rx_path, hdr->src_qp,
+						  hdr->dest_qp, hdr->psn,
+						  TBV_NATIVE_READ_ACK_RETRY);
+		}
 		mutex_unlock(&read->data_lock);
 		tbv_read_ctx_put(read);
 		return;
@@ -9325,11 +7840,16 @@ static void tbv_rx_handle_rdma_read_resp(struct tbv_state *state,
 		goto complete_ack;
 	}
 
+	taken = read->received;
 	read->received = next_received;
 	ret = tbv_read_resp_drain_frags_locked(read);
 	if (ret) {
 		atomic64_inc(&state->data_rx_read_resp_copy_error);
 		goto complete_ack;
+	}
+	if (tbv_read_resp_advanced(taken, read->received)) {
+		read->retry_sent = false;
+		tbv_qp_restart_read_timeout(tqp, read);
 	}
 	if (read->received != read->total_len) {
 		mutex_unlock(&read->data_lock);
@@ -10126,7 +8646,6 @@ static int tbv_ibdev_register_one(struct tbv_state *state,
 				  const char *name,
 				  struct tbv_ibdev **out)
 {
-	enum tbv_backend_type backend = rail->peer->backend;
 	struct tbv_ibdev *dev;
 	struct device *dma_device;
 	int ret;
@@ -10139,7 +8658,6 @@ static int tbv_ibdev_register_one(struct tbv_state *state,
 		return -ENOMEM;
 
 	dev->state = state;
-	dev->backend = backend;
 	dev->rail = rail;
 	dev->base.phys_port_cnt = TBV_IBDEV_PORTS;
 	dev->base.num_comp_vectors = num_possible_cpus();
@@ -10151,7 +8669,6 @@ static int tbv_ibdev_register_one(struct tbv_state *state,
 	 */
 	dev->base.node_guid =
 		cpu_to_be64(0x0200544256524253ULL +
-			    ((u64)backend << 56) +
 			    ((u64)rail->peer->peer_id << 24) +
 			    rail->rail_id);
 	dev->base.uverbs_cmd_mask |=
@@ -10167,14 +8684,12 @@ static int tbv_ibdev_register_one(struct tbv_state *state,
 	ret = tbv_ibdev_attach_netdev(dev);
 	if (ret) {
 		if (ret == -EPROBE_DEFER)
-			pr_debug("deferred %s RoCE netdev %s attach for %s\n",
-				 tbv_backend_name(backend),
-				 tbv_ibdev_netdev_name(dev) ?: "(none)",
+			pr_debug("deferred native RoCE netdev %s attach for %s\n",
+				 tbv_ibdev_netdev_name() ?: "(none)",
 				 name);
 		else
-			pr_warn("failed to attach %s RoCE netdev %s for %s: %d\n",
-				tbv_backend_name(backend),
-				tbv_ibdev_netdev_name(dev) ?: "(none)",
+			pr_warn("failed to attach native RoCE netdev %s for %s: %d\n",
+				tbv_ibdev_netdev_name() ?: "(none)",
 				name, ret);
 		put_device(dma_device);
 		ib_dealloc_device(&dev->base);
@@ -10199,8 +8714,8 @@ static int tbv_ibdev_register_one(struct tbv_state *state,
 
 	if (out)
 		*out = dev;
-	pr_info("registered %s ib_device %s rail=peer%u/%u domain=%d guid=%016llx\n",
-		tbv_backend_name(backend), dev_name(&dev->base.dev),
+	pr_info("registered native ib_device %s rail=peer%u/%u domain=%d guid=%016llx\n",
+		dev_name(&dev->base.dev),
 		rail->peer->peer_id, rail->rail_id,
 		rail->peer->xd && rail->peer->xd->tb ?
 		rail->peer->xd->tb->index : -1,
@@ -10216,15 +8731,12 @@ static int tbv_ibdev_register_one(struct tbv_state *state,
  * naming gives different ib_device numbers on different nodes for the
  * same physical lane, which breaks any tooling that pins to "usb4_rdma2".
  * Use (tb_domain_index * (TBV_NATIVE_MAX_LANES + 1) + lane) so the same lane
- * on the same domain always gets the same name. Apple peers don't carry a
- * lane subdivision, so they take the per-domain "Apple slot" which lives
- * just above the native lane range: with four lanes, domain 0 names
- * usb4_rdma0..3 (Apple 4) and domain 1 usb4_rdma5..8 (Apple 9).
+ * on the same domain always gets the same name: with four lanes, domain 0
+ * names usb4_rdma0..3 and domain 1 usb4_rdma5..8.
  */
 static int tbv_ibdev_rail_name_index(const struct tbv_rail *rail)
 {
 	int domain_idx;
-	unsigned int slot;
 
 	if (!rail || !rail->peer || !rail->peer->xd || !rail->peer->xd->tb)
 		return -ENODEV;
@@ -10233,16 +8745,10 @@ static int tbv_ibdev_rail_name_index(const struct tbv_rail *rail)
 	if (domain_idx < 0)
 		return -ENODEV;
 
-	if (rail->peer->backend == TBV_BACKEND_NATIVE) {
-		if (rail->native_lane >= TBV_NATIVE_MAX_LANES)
-			return -ERANGE;
-		slot = rail->native_lane;
-	} else {
-		/* One slot per (domain, backend) for Apple. */
-		slot = TBV_NATIVE_MAX_LANES;
-	}
+	if (rail->native_lane >= TBV_NATIVE_MAX_LANES)
+		return -ERANGE;
 
-	return domain_idx * (TBV_NATIVE_MAX_LANES + 1) + slot;
+	return domain_idx * (TBV_NATIVE_MAX_LANES + 1) + rail->native_lane;
 }
 
 int tbv_ibdev_rail_event(struct tbv_state *state, struct tbv_rail *rail,
@@ -10335,8 +8841,7 @@ int tbv_ibdev_rail_event(struct tbv_state *state, struct tbv_rail *rail,
 			mutex_unlock(&state->rail_register_lock);
 			pr_info("deferred per-rail ib_device %s registration until RoCE netdev %s exists\n",
 				name,
-				tbv_ibdev_netdev_name_for(state,
-							  rail->peer->backend) ?:
+				tbv_ibdev_netdev_name() ?:
 				"(none)");
 			return ret;
 		}
@@ -10363,7 +8868,7 @@ static bool tbv_ibdev_required_netdev_registered(struct tbv_state *state,
 	if (!rail || !rail->peer)
 		return false;
 
-	name = tbv_ibdev_netdev_name_for(state, rail->peer->backend);
+	name = tbv_ibdev_netdev_name();
 	if (!name)
 		return true;
 
@@ -10451,7 +8956,7 @@ static void tbv_ibdev_detach_matching_netdev(struct tbv_state *state,
 			if (!dev || dev->netdev != ndev)
 				continue;
 
-			expected_name = tbv_ibdev_netdev_name(dev);
+			expected_name = tbv_ibdev_netdev_name();
 			if (detach_renamed && expected_name &&
 			    !strcmp(expected_name, ndev->name))
 				continue;

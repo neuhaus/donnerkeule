@@ -43,13 +43,6 @@ static bool tbv_native_e2e_enabled(const struct tbv_peer *peer)
 	return tbv_native_e2e_auto_enabled(peer);
 }
 
-static bool tbv_peer_matches(const struct tbv_peer *peer,
-			     enum tbv_backend_type backend,
-			     const struct tb_xdomain *xd)
-{
-	return peer->backend == backend && peer->xd == xd;
-}
-
 static bool tbv_xdomain_same_remote_host(const struct tb_xdomain *a,
 					 const struct tb_xdomain *b)
 {
@@ -71,9 +64,9 @@ static bool tbv_native_legacy_xdomain_allowed_locked(struct tbv_state *state,
 {
 	struct tbv_peer *pos;
 
+	lockdep_assert_held(&state->lock);
+
 	list_for_each_entry(pos, &state->peers, node) {
-		if (pos->backend != TBV_BACKEND_NATIVE)
-			continue;
 		if (pos->xd == xd)
 			return true;
 		if (!tbv_xdomain_same_remote_host(pos->xd, xd))
@@ -94,11 +87,10 @@ static bool tbv_native_legacy_rail_key_allowed_locked(struct tbv_peer *peer,
 	struct tbv_state *state = peer->state;
 	struct tbv_peer *pos_peer;
 
+	lockdep_assert_held(&peer->state->lock);
+
 	list_for_each_entry(pos_peer, &state->peers, node) {
 		struct tbv_rail *pos_rail;
-
-		if (pos_peer->backend != TBV_BACKEND_NATIVE)
-			continue;
 
 		list_for_each_entry(pos_rail, &pos_peer->rails, node) {
 			if (pos_peer == peer)
@@ -116,15 +108,11 @@ static bool tbv_native_legacy_rail_key_allowed_locked(struct tbv_peer *peer,
 }
 
 struct tbv_peer *tbv_peer_get_or_create(struct tbv_state *state,
-					enum tbv_backend_type backend,
 					struct tb_xdomain *xd)
 {
 	struct tbv_peer *peer;
 	struct tbv_peer *pos;
 	u32 existing_peer_id = 0;
-
-	if (!tbv_backend_get(backend))
-		return ERR_PTR(-EINVAL);
 
 	peer = kzalloc(sizeof(*peer), GFP_KERNEL);
 	if (!peer)
@@ -132,7 +120,6 @@ struct tbv_peer *tbv_peer_get_or_create(struct tbv_state *state,
 
 	refcount_set(&peer->refcnt, 1);
 	peer->state = state;
-	peer->backend = backend;
 	peer->xd = tb_xdomain_get(xd);
 	INIT_LIST_HEAD(&peer->rails);
 	mutex_init(&peer->control_lock);
@@ -140,20 +127,19 @@ struct tbv_peer *tbv_peer_get_or_create(struct tbv_state *state,
 
 	mutex_lock(&state->lock);
 	list_for_each_entry(pos, &state->peers, node) {
-		if (!tbv_peer_matches(pos, backend, xd))
+		if (pos->xd != xd)
 			continue;
 
 		refcount_inc(&pos->refcnt);
 		mutex_unlock(&state->lock);
 		tb_xdomain_put(peer->xd);
 		kfree(peer);
-		pr_debug("peer %u reused backend=%s refs=%u\n", pos->peer_id,
-			tbv_backend_name(backend), refcount_read(&pos->refcnt));
+		pr_debug("peer %u reused refs=%u\n", pos->peer_id,
+			 refcount_read(&pos->refcnt));
 		return pos;
 	}
 
-	if (backend == TBV_BACKEND_NATIVE &&
-	    !state->native_control_source_aware &&
+	if (!state->native_control_source_aware &&
 	    !state->native_control_ids &&
 	    !tbv_native_legacy_xdomain_allowed_locked(state, xd,
 						      &existing_peer_id)) {
@@ -174,8 +160,7 @@ struct tbv_peer *tbv_peer_get_or_create(struct tbv_state *state,
 	list_add_tail(&peer->node, &state->peers);
 	mutex_unlock(&state->lock);
 
-	pr_info("peer %u created backend=%s\n", peer->peer_id,
-		tbv_backend_name(backend));
+	pr_info("peer %u created backend=native\n", peer->peer_id);
 	return peer;
 }
 
@@ -199,8 +184,7 @@ void tbv_peer_put(struct tbv_state *state, struct tbv_peer *peer)
 		pr_warn("peer %u destroyed with %u live rails\n",
 			peer->peer_id, peer->nr_rails);
 
-	pr_info("peer %u destroyed backend=%s\n", peer->peer_id,
-		tbv_backend_name(peer->backend));
+	pr_info("peer %u destroyed backend=native\n", peer->peer_id);
 	ida_destroy(&peer->rail_ids);
 	tbv_control_destroy(peer);
 	tb_xdomain_put(peer->xd);
@@ -242,9 +226,8 @@ struct tbv_rail *tbv_peer_add_rail(struct tbv_peer *peer,
 	rail->native_ready_sent = false;
 	rail->native_remote_ready = false;
 	tbv_native_control_init_rail(rail, peer);
-	tbv_path_default_config(peer->backend, &path_cfg);
-	if (peer->backend == TBV_BACKEND_NATIVE &&
-	    tbv_native_e2e_enabled(peer)) {
+	tbv_path_default_config(&path_cfg);
+	if (tbv_native_e2e_enabled(peer)) {
 		/*
 		 * E2E is hardware flow control only; it does not retransmit
 		 * lost frames. In auto mode AMD NHI uses the software data
@@ -258,8 +241,7 @@ struct tbv_rail *tbv_peer_add_rail(struct tbv_peer *peer,
 	tbv_path_init(&rail->path, &path_cfg, rail);
 
 	mutex_lock(&peer->state->lock);
-	if (peer->backend == TBV_BACKEND_NATIVE &&
-	    !peer->state->native_control_source_aware &&
+	if (!peer->state->native_control_source_aware &&
 	    !peer->state->native_control_ids &&
 	    !tbv_native_legacy_rail_key_allowed_locked(peer, key,
 						       &existing_peer_id)) {

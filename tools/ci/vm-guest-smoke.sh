@@ -101,7 +101,7 @@ load_and_check() {
 	local kver="$1"
 	local ibdev=""
 
-	modprobe thunderbolt_ibverbs profile=linux_perf bind_services=0 \
+	modprobe thunderbolt_ibverbs bind_services=0 \
 		register_verbs=1
 
 	if ! grep -q '^thunderbolt_ibverbs ' /proc/modules; then
@@ -113,7 +113,7 @@ load_and_check() {
 	ls -l /sys/class/infiniband
 	if [[ -d /sys/class/infiniband ]]; then
 		ibdev="$(find /sys/class/infiniband -mindepth 1 -maxdepth 1 \
-			\( -name 'usb4_rdma*' -o -name 'usb4_apple*' \) \
+			-name 'usb4_rdma*' \
 			-printf '%f\n' | sort | sed -n '1p')"
 	fi
 
@@ -134,10 +134,10 @@ load_and_check() {
 	test -e /sys/class/infiniband/"$ibdev"
 	ls /dev/infiniband/uverbs* >/dev/null
 	rdma link show | tee /tmp/tbv-rdma-link.txt
-	grep -Eq 'usb4_(rdma|apple)' /tmp/tbv-rdma-link.txt
+	grep -q 'usb4_rdma' /tmp/tbv-rdma-link.txt
 
 	ibv_devices | tee /tmp/tbv-ibv-devices.txt
-	if grep -Eq 'usb4_(rdma|apple)' /tmp/tbv-ibv-devices.txt; then
+	if grep -q 'usb4_rdma' /tmp/tbv-ibv-devices.txt; then
 		gcc -std=c11 -Wall -Wextra -Werror \
 			"$src_dir/tools/ci/verbs-smoke.c" -libverbs \
 			-o /tmp/tbv-verbs-smoke

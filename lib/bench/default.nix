@@ -2,10 +2,6 @@
 
 let
   linuxPerfModuleArgs = {
-    profile = "linux_perf";
-    compat = "off";
-    tbnet = "prefer_rdma";
-    tbnet_identity = "off";
     roce_netdev = "br0.lan";
     lanes = "2";
     bind_services = "1";
@@ -14,7 +10,6 @@ let
     negotiate_native = "1";
     enable_tunnels = "1";
     native_data = "1";
-    apple_data = "0";
     register_verbs = "1";
     zcopy_min_bytes = "4096";
     native_fragment_striping = "0";
@@ -50,7 +45,6 @@ rec {
       nativeBackend = "native";
       rc = true;
       uc = true;
-      apple = false;
     };
   };
 

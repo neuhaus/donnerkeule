@@ -28,7 +28,7 @@ let
 in
 stdenv.mkDerivation {
   pname = "thunderbolt-ibverbs-bench-tools";
-  version = "0.4.0";
+  version = import ./version.nix;
 
   src = lib.cleanSourceWith {
     src = source;

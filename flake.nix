@@ -12,6 +12,7 @@
     }:
     let
       lib = nixpkgs.lib;
+      tbvVersion = import ./nix/version.nix;
       portableLocalThunderboltKernelPatches = import ./kernel-workflow/patches/local-portable.nix;
       portableThunderboltKernelPatches = import ./kernel-workflow/patches/portable.nix;
       portableThunderboltKernelPatchesFor = import ./kernel-workflow/patches/portable-for-kernel.nix;
@@ -60,7 +61,7 @@
         pkgs:
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-ibverbs-script-syntax";
-          version = "0.4.0";
+          version = tbvVersion;
           src = ./.;
 
           nativeBuildInputs = [
@@ -103,7 +104,7 @@
         in
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-portable-kernel-patches-apply-check";
-          version = "0.4.0";
+          version = tbvVersion;
           src = kernel.src;
 
           nativeBuildInputs = [ pkgs.git ];
@@ -137,7 +138,7 @@
         pkgs:
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-ibverbs-proto-smoke";
-          version = "0.4.0";
+          version = tbvVersion;
           src = ./.;
 
           nativeBuildInputs = [ pkgs.python3 pkgs.git ];
@@ -226,7 +227,7 @@
         pkgs:
         pkgs.stdenv.mkDerivation {
           pname = "thunderbolt-ibverbs-verbs-smoke-build";
-          version = "0.4.0";
+          version = tbvVersion;
           src = ./.;
 
           nativeBuildInputs = [ pkgs.pkg-config ];

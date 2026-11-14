@@ -220,4 +220,5 @@ module_exit(tbv_exit);
 MODULE_AUTHOR("thunderbolt-ibverbs contributors");
 MODULE_DESCRIPTION("Thunderbolt/USB4 host-to-host RDMA verbs");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(TBV_VERSION);
 MODULE_SOFTDEP("pre: configfs ib_core ib_uverbs");

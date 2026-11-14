@@ -34,6 +34,8 @@ tbv-tb-ring-layout := $(call try-run,\
 ifeq ($(tbv-tb-ring-layout),y)
 ccflags-y += -DTBV_TB_RING_LAYOUT
 endif
+TBV_VERSION ?= $(or $(shell awk -F'"' '/^PACKAGE_VERSION=/ { print $$2; exit }' $(src)/../dkms.conf 2>/dev/null),unknown)
+ccflags-y += -DTBV_VERSION=\"$(TBV_VERSION)\"
 endif
 
 .PHONY: all clean modules modules_install help

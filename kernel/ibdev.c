@@ -892,6 +892,8 @@ static unsigned long tbv_verbs_ack_timeout_jiffies(u8 timeout)
 static unsigned long
 tbv_qp_tx_timeout_jiffies_locked(const struct tbv_qp *tqp)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	if (tqp->type == IB_QPT_RC && tqp->ack_timeout_set)
 		return tbv_verbs_ack_timeout_jiffies(tqp->attr.timeout);
 
@@ -904,6 +906,8 @@ tbv_qp_rx_timeout_jiffies_locked(const struct tbv_qp *tqp,
 {
 	unsigned long rx_timeout;
 	u8 retry_cnt;
+
+	lockdep_assert_held(&tqp->lock);
 
 	if (!tx_timeout)
 		return 0;
@@ -925,6 +929,8 @@ tbv_qp_timeout_interval_jiffies_locked(const struct tbv_qp *tqp)
 		msecs_to_jiffies(TBV_QP_TIMEOUT_WORK_INTERVAL_MS);
 	unsigned long read_interval = msecs_to_jiffies(TBV_READ_RESP_RETRY_MS);
 	unsigned long interval;
+
+	lockdep_assert_held(&tqp->lock);
 
 	if (!timeout)
 		return 0;
@@ -992,6 +998,8 @@ static void tbv_qp_schedule_timeout_delay_locked(struct tbv_qp *tqp,
 	struct workqueue_struct *wq = tqp->owner && tqp->owner->workqueue ?
 				      tqp->owner->workqueue : system_wq;
 
+	lockdep_assert_held(&tqp->lock);
+
 	if (!delay || tqp->closing || (tqp->timeout_work_armed && !replace))
 		return;
 
@@ -1001,6 +1009,8 @@ static void tbv_qp_schedule_timeout_delay_locked(struct tbv_qp *tqp,
 
 static void tbv_qp_schedule_timeout_locked(struct tbv_qp *tqp)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	tbv_qp_schedule_timeout_delay_locked(tqp,
 					     tbv_qp_timeout_interval_jiffies_locked(tqp),
 					     false);
@@ -1010,6 +1020,8 @@ static void tbv_qp_schedule_timeout_now_locked(struct tbv_qp *tqp)
 {
 	struct workqueue_struct *wq = tqp->owner && tqp->owner->workqueue ?
 				      tqp->owner->workqueue : system_wq;
+
+	lockdep_assert_held(&tqp->lock);
 
 	if (!tbv_qp_tx_timeout_jiffies_locked(tqp) || tqp->closing)
 		return;
@@ -1202,6 +1214,8 @@ static void tbv_qp_ack_history_store_locked(struct tbv_qp *tqp, u32 psn,
 {
 	struct tbv_ack_history_entry *entry;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	entry = &tqp->ack_history[psn % TBV_ACK_HISTORY_SIZE];
 	entry->psn = psn & TBV_PSN_MASK;
 	entry->status = status;
@@ -1212,6 +1226,8 @@ static bool tbv_qp_ack_history_lookup_locked(struct tbv_qp *tqp, u32 psn,
 					     int *status)
 {
 	const struct tbv_ack_history_entry *entry;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	entry = &tqp->ack_history[psn % TBV_ACK_HISTORY_SIZE];
 	if (!entry->valid || entry->psn != (psn & TBV_PSN_MASK))
@@ -1228,6 +1244,8 @@ static bool tbv_rx_reack_duplicate_locked(struct tbv_state *state,
 					  u32 psn)
 {
 	int status = 0;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (tbv_psn_delta(psn, tqp->rx_expected_psn) >= 0)
 		return false;
@@ -1278,6 +1296,8 @@ static int tbv_qp_reserve_sendq(struct tbv_qp *tqp)
 static void tbv_qp_release_sendq_counted_locked(struct tbv_qp *tqp,
 						bool *counted)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	if (!*counted)
 		return;
 	if (WARN_ON_ONCE(!tqp->sendq_count))
@@ -1430,6 +1450,8 @@ static void tbv_qp_drain_ready_sends_locked(struct tbv_qp *tqp,
 					    struct list_head *complete)
 {
 	struct tbv_send_ctx *send;
+
+	lockdep_assert_held(&tqp->lock);
 
 	while (!list_empty(&tqp->pending_sends)) {
 		send = list_first_entry(&tqp->pending_sends,
@@ -1821,7 +1843,10 @@ static bool tbv_ibdev_rail_publish_ready_locked(struct tbv_state *state,
 {
 	struct tbv_peer *peer;
 
-	if (!state || !rail || rail->removing)
+	if (!state)
+		return false;
+	lockdep_assert_held(&state->lock);
+	if (!rail || rail->removing)
 		return false;
 	peer = rail->peer;
 	if (!peer)
@@ -1855,6 +1880,8 @@ tbv_select_qp_rail_locked(struct tbv_ibdev *dev, enum tbv_backend_type backend,
 	u32 best_rr_distance = U32_MAX;
 	u32 best_rail_id = U32_MAX;
 	u32 next_rail_id;
+
+	lockdep_assert_held(&dev->state->lock);
 
 	*counted = false;
 	if (WARN_ON_ONCE(!home))
@@ -1933,6 +1960,8 @@ static u32 tbv_collect_peer_data_paths_locked(struct tbv_peer *peer,
 {
 	struct tbv_rail *rail;
 
+	lockdep_assert_held(&peer->state->lock);
+
 	list_for_each_entry(rail, &peer->rails, node) {
 		if (count == max_paths)
 			break;
@@ -1955,6 +1984,8 @@ static u32 tbv_collect_native_data_paths_for_qp_locked(struct tbv_qp *tqp,
 	struct tbv_peer *peer;
 	struct tbv_peer *pos;
 	u32 count;
+
+	lockdep_assert_held(&tqp->owner->lock);
 
 	if (!tqp->rail || max_paths == 0)
 		return 0;
@@ -1982,6 +2013,8 @@ static struct tbv_path *
 tbv_select_native_data_path_for_qp_locked(struct tbv_qp *tqp)
 {
 	struct tbv_rail *rail = tqp->rail;
+
+	lockdep_assert_held(&tqp->owner->lock);
 
 	if (rail->peer->backend != TBV_BACKEND_NATIVE)
 		return NULL;
@@ -2028,6 +2061,8 @@ tbv_select_native_control_path_for_qp_locked(struct tbv_qp *tqp,
 	u32 best_data_score = U32_MAX;
 	u32 best_control_score = U32_MAX;
 
+	lockdep_assert_held(&tqp->owner->lock);
+
 	if (peer->backend != TBV_BACKEND_NATIVE)
 		return NULL;
 
@@ -2063,6 +2098,8 @@ static struct tbv_path *
 tbv_first_active_apple_path_for_qp_locked(struct tbv_qp *tqp)
 {
 	struct tbv_rail *rail = tqp->rail;
+
+	lockdep_assert_held(&tqp->owner->lock);
 
 	if (rail->peer->backend != TBV_BACKEND_APPLE)
 		return NULL;
@@ -2993,6 +3030,8 @@ static int tbv_validate_modify_qp_locked(struct tbv_qp *tqp,
 					 enum ib_qp_state *cur_state,
 					 enum ib_qp_state *next_state)
 {
+	lockdep_assert_held(&tqp->lock);
+
 	*cur_state = tqp->state;
 	*next_state = (attr_mask & IB_QP_STATE) ? attr->qp_state : *cur_state;
 
@@ -6027,6 +6066,8 @@ tbv_apple_pending_active_locked(struct tbv_state *state, struct tbv_qp *tqp)
 {
 	struct tbv_apple_pending_rx *p;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (tqp->apple_pending_active >= 0)
 		return &tqp->apple_pending[tqp->apple_pending_active];
 	if (!tqp->apple_pending || !tqp->apple_pending_slot_count)
@@ -6049,6 +6090,8 @@ tbv_apple_pending_active_locked(struct tbv_state *state, struct tbv_qp *tqp)
 static void tbv_apple_pending_finish_locked(struct tbv_qp *tqp)
 {
 	struct tbv_apple_pending_rx *p;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (tqp->apple_pending_active < 0)
 		return;
@@ -6089,6 +6132,8 @@ static void tbv_apple_rx_push_wc(struct tbv_qp *tqp,
 static void tbv_apple_rx_drain_pending_locked(struct tbv_state *state,
 					      struct tbv_qp *tqp)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	while (tqp->apple_pending_ready_count) {
 		struct tbv_apple_pending_rx *p;
 		struct tbv_recv_wqe wqe;
@@ -6675,6 +6720,8 @@ static bool tbv_qp_apple_tx_window_ok_locked(struct tbv_qp *tqp,
 	int cur_wr = atomic_read(&tqp->apple_tx_inflight);
 	int cur_frames = atomic_read(&tqp->apple_tx_inflight_frames);
 
+	lockdep_assert_held(&tqp->lock);
+
 	return tbv_apple_tx_window_ok(cur_wr, cur_frames, exclusive, max_wr,
 				      max_frames, frame_charge);
 }
@@ -7104,6 +7151,8 @@ tbv_read_resp_find_frag_locked(struct tbv_read_ctx *read, u32 offset)
 {
 	struct tbv_rx_reorder_frag *frag;
 
+	lockdep_assert_held(&read->data_lock);
+
 	list_for_each_entry(frag, &read->resp_frags, node) {
 		if (frag->offset == offset)
 			return frag;
@@ -7119,6 +7168,8 @@ static int tbv_read_resp_store_frag_locked(struct tbv_read_ctx *read,
 	struct tbv_rx_reorder_frag *frag;
 	struct tbv_rx_reorder_frag *pos;
 	u32 new_bytes;
+
+	lockdep_assert_held(&read->data_lock);
 
 	frag = tbv_read_resp_find_frag_locked(read, offset);
 	if (frag) {
@@ -7157,6 +7208,8 @@ static int tbv_read_resp_drain_frags_locked(struct tbv_read_ctx *read)
 {
 	struct tbv_rx_reorder_frag *frag;
 	int ret;
+
+	lockdep_assert_held(&read->data_lock);
 
 	for (;;) {
 		frag = tbv_read_resp_find_frag_locked(read, read->received);
@@ -7319,6 +7372,8 @@ static bool tbv_rx_write_fragment_shape(u32 total_len, u32 offset, u32 len,
 static void tbv_rx_reorder_link_msg_locked(struct tbv_qp *tqp,
 					   struct tbv_rx_reorder_msg *msg)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	list_add_tail(&msg->node, &tqp->rx_reorder);
 	hash_add(tqp->rx_reorder_hash, &msg->hnode, msg->psn);
 	tqp->rx_reorder_count++;
@@ -7327,6 +7382,8 @@ static void tbv_rx_reorder_link_msg_locked(struct tbv_qp *tqp,
 static void tbv_rx_reorder_unlink_msg_locked(struct tbv_qp *tqp,
 					     struct tbv_rx_reorder_msg *msg)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	list_del(&msg->node);
 	hash_del(&msg->hnode);
 	tqp->rx_reorder_count--;
@@ -7343,6 +7400,8 @@ static int tbv_rx_reorder_store_fragment_locked(struct tbv_qp *tqp,
 {
 	struct tbv_rx_reorder_frag *frag;
 	u32 new_bytes;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (!len)
 		return 0;
@@ -7616,6 +7675,7 @@ static bool tbv_rx_deliver_reorder_msg_locked(struct tbv_state *state,
 					      struct tbv_rx_reorder_msg *msg)
 {
 	struct tbv_rx_reorder_frag *frag;
+
 	struct tbv_cq *recv_cq = container_of(tqp->base.recv_cq,
 					      struct tbv_cq, base);
 	struct tbv_recv_wqe wqe;
@@ -7624,6 +7684,8 @@ static bool tbv_rx_deliver_reorder_msg_locked(struct tbv_state *state,
 	int ack_status = 0;
 	int status;
 	bool cq_error = false;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (!tbv_qp_pop_recv(tqp, &wqe)) {
 		atomic64_inc(&state->data_rx_rnr);
@@ -7685,11 +7747,14 @@ static bool tbv_rx_deliver_reorder_write_locked(struct tbv_state *state,
 {
 	struct tbv_rx_reorder_frag *frag;
 	struct tbv_mr *mr;
+
 	struct ib_wc wc = {};
 	enum ib_wc_status status = IB_WC_SUCCESS;
 	int ack_status = TBV_NATIVE_SEND_ACK_OK;
 	bool cq_error = false;
 	int ret = 0;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (msg->with_imm && !tbv_qp_pop_recv(tqp, &tqp->rx_write.imm_wqe)) {
 		atomic64_inc(&state->data_rx_rnr);
@@ -7785,6 +7850,8 @@ static bool tbv_rx_deliver_block_write_locked(struct tbv_state *state,
 	u32 src_qp = msg->src_qp;
 	u32 psn = msg->psn;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (msg->with_imm) {
 		struct tbv_cq *recv_cq = container_of(tqp->base.recv_cq,
 						      struct tbv_cq, base);
@@ -7831,6 +7898,8 @@ static void tbv_rx_prune_stale_reorder_locked(struct tbv_state *state,
 	struct tbv_rx_reorder_msg *msg;
 	struct tbv_rx_reorder_msg *tmp;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	list_for_each_entry_safe(msg, tmp, &tqp->rx_reorder, node) {
 		if (tbv_psn_delta(msg->psn, tqp->rx_expected_psn) >= 0)
 			continue;
@@ -7852,6 +7921,8 @@ static bool tbv_rx_deliver_reorder_read_req_locked(
 	struct tbv_rx_reorder_msg *msg)
 {
 	struct tbv_native_data_header hdr = {};
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	hdr.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_REQ;
 	hdr.flags = TBV_NATIVE_DATA_F_LAST;
@@ -7875,6 +7946,8 @@ static void tbv_rx_drain_reorder_locked(struct tbv_state *state,
 					struct tbv_path *rx_path)
 {
 	struct tbv_rx_reorder_msg *msg;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	while (!tqp->rx_msg.active && !tqp->rx_write.active) {
 		tbv_rx_prune_stale_reorder_locked(state, tqp, rx_path);
@@ -7906,6 +7979,8 @@ static bool tbv_rx_consume_ordered_psn_ack_locked(struct tbv_state *state,
 						  struct tbv_path *rx_path,
 						  u32 psn, int ack_status)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (psn != tqp->rx_expected_psn)
 		return false;
 
@@ -7919,6 +7994,8 @@ static void tbv_rx_drop_reorder_msg_locked(struct tbv_state *state,
 					   struct tbv_qp *tqp,
 					   struct tbv_rx_reorder_msg *msg)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	tbv_rx_reorder_unlink_msg_locked(tqp, msg);
 	atomic64_inc(&state->data_rx_reorder_dropped);
 	tbv_rx_reorder_free_msg(msg);
@@ -7927,6 +8004,8 @@ static void tbv_rx_drop_reorder_msg_locked(struct tbv_state *state,
 static bool tbv_rx_rnr_matches_locked(const struct tbv_qp *tqp,
 				      u32 src_qp, u32 psn)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	return tqp->rx_rnr_active && tqp->rx_rnr_src_qp == src_qp &&
 	       tqp->rx_rnr_psn == (psn & TBV_PSN_MASK);
 }
@@ -7936,6 +8015,8 @@ static bool tbv_rx_rnr_is_first_retry_locked(const struct tbv_qp *tqp,
 					     u64 remote_addr,
 					     u32 frag_offset)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	return tbv_rx_rnr_matches_locked(tqp, src_qp, psn) &&
 	       tqp->rx_rnr_remote_addr == remote_addr &&
 	       tqp->rx_rnr_frag_offset == frag_offset;
@@ -7944,6 +8025,8 @@ static bool tbv_rx_rnr_is_first_retry_locked(const struct tbv_qp *tqp,
 static void tbv_rx_mark_rnr_locked(struct tbv_qp *tqp, u32 src_qp, u32 psn,
 				   u64 remote_addr, u32 frag_offset)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	tqp->rx_rnr_active = true;
 	tqp->rx_rnr_src_qp = src_qp;
 	tqp->rx_rnr_psn = psn & TBV_PSN_MASK;
@@ -7953,6 +8036,8 @@ static void tbv_rx_mark_rnr_locked(struct tbv_qp *tqp, u32 src_qp, u32 psn,
 
 static void tbv_rx_clear_rnr_locked(struct tbv_qp *tqp, u32 src_qp, u32 psn)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (tbv_rx_rnr_matches_locked(tqp, src_qp, psn))
 		tqp->rx_rnr_active = false;
 }
@@ -7962,7 +8047,10 @@ static void tbv_rx_buffer_read_req_locked(
 	const struct tbv_native_data_header *hdr, u32 psn)
 {
 	struct tbv_rx_reorder_msg *msg;
+
 	s32 delta = tbv_psn_delta(psn, tqp->rx_expected_psn);
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (delta < 0) {
 		tbv_qp_retry_read_resp(tqp, psn);
@@ -8036,12 +8124,15 @@ static void tbv_rx_buffer_fragment_locked(struct tbv_state *state,
 					  bool last, const void *payload)
 {
 	struct tbv_rx_reorder_msg *msg;
+
 	s32 delta = tbv_psn_delta(psn, tqp->rx_expected_psn);
 	bool with_imm = hdr->opcode == TBV_NATIVE_DATA_OP_SEND_IMM;
 	u32 imm_data = with_imm ? hdr->rkey : 0;
 	u32 frag_idx;
 	u32 frag_count;
 	int ret;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (delta < 0) {
 		tbv_rx_reack_duplicate_locked(state, tqp, rx_path,
@@ -8140,11 +8231,14 @@ static void tbv_rx_buffer_write_fragment_locked(
 	u32 offset, bool last, bool with_imm, const void *payload)
 {
 	struct tbv_rx_reorder_msg *msg;
+
 	s32 delta = tbv_psn_delta(psn, tqp->rx_expected_psn);
 	u32 imm_data = with_imm ? hdr->imm_data : 0;
 	u32 frag_idx;
 	u32 frag_count;
 	int ret;
+
+	lockdep_assert_held(&tqp->rx_lock);
 
 	if (delta < 0) {
 		tbv_rx_reack_duplicate_locked(state, tqp, rx_path,
@@ -8510,6 +8604,8 @@ static int tbv_rx_finish_write_locked(struct tbv_state *state,
 						 TBV_NATIVE_SEND_ACK_ERROR;
 	bool cq_error = false;
 
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (!wrx->active)
 		return 0;
 
@@ -8555,6 +8651,8 @@ static void tbv_rx_fail_active_write_locked(struct tbv_state *state,
 						struct tbv_path *rx_path,
 						enum ib_wc_status status)
 {
+	lockdep_assert_held(&tqp->rx_lock);
+
 	if (!tqp->rx_write.active)
 		return;
 	tbv_rx_finish_write_locked(state, tqp, rx_path, status);

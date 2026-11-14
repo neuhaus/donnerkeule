@@ -71,6 +71,8 @@ static bool tbv_native_legacy_xdomain_allowed_locked(struct tbv_state *state,
 {
 	struct tbv_peer *pos;
 
+	lockdep_assert_held(&state->lock);
+
 	list_for_each_entry(pos, &state->peers, node) {
 		if (pos->backend != TBV_BACKEND_NATIVE)
 			continue;
@@ -93,6 +95,8 @@ static bool tbv_native_legacy_rail_key_allowed_locked(struct tbv_peer *peer,
 {
 	struct tbv_state *state = peer->state;
 	struct tbv_peer *pos_peer;
+
+	lockdep_assert_held(&peer->state->lock);
 
 	list_for_each_entry(pos_peer, &state->peers, node) {
 		struct tbv_rail *pos_rail;

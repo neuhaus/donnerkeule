@@ -455,8 +455,11 @@ err_tx_ring:
 void tbv_tbnet_minimal_recompute_state_locked(struct tbv_tbnet_identity *identity)
 {
 	struct tbv_tbnet_minimal_session *session;
+
 	unsigned long state = 0;
 	bool neighbor_seen = false;
+
+	lockdep_assert_held(&identity->lock);
 
 	if (identity->mode != TBV_TBNET_ID_MINIMAL_PACKET)
 		return;
@@ -514,6 +517,8 @@ bool tbv_tbnet_minimal_path_ready(struct tbv_tbnet_identity *identity,
 void tbv_tbnet_minimal_clear_neighbors_locked(struct tbv_tbnet_identity *identity)
 {
 	struct tbv_tbnet_minimal_session *session;
+
+	lockdep_assert_held(&identity->lock);
 
 	if (identity->mode != TBV_TBNET_ID_MINIMAL_PACKET)
 		return;

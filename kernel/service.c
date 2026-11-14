@@ -152,6 +152,8 @@ static bool tbv_service_has_pending_apple_rail_locked(struct tbv_state *state)
 {
 	struct tbv_peer *peer;
 
+	lockdep_assert_held(&state->lock);
+
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 

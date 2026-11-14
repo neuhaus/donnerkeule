@@ -492,6 +492,8 @@ tbv_native_data_valid_path_credit(const struct tbv_native_data_header *hdr)
 static void tbv_path_count_raw_stream_locked(struct tbv_path *path,
 					     struct tbv_tx_packet *packet)
 {
+	lockdep_assert_held(&path->tx_lock);
+
 	if (packet->raw_stream_start) {
 		path->tx_raw_stream_active = true;
 		path->tx_raw_stream_owner = packet->owner_ctx;

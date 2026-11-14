@@ -3,6 +3,20 @@
  * The opt-in mode reserves the native rings for descriptors, in both
  * directions. Ordinary MRs use bounded coherent staging; DMA-BUF MRs do not.
  */
+/*
+ * Locking
+ *
+ *   dmabuf_engine.rx_lock > state->lock
+ *   dmabuf_engine.rx_lock > dmabuf_engine.ring_lock
+ *   state->lock           > dmabuf_engine.ring_lock (trylock only)
+ *
+ * ring_lock is only trylocked while state->lock is held; elsewhere,
+ * including tbv_dmabuf_stop_rail() under rx_lock, it is a blocking lock.
+ *
+ * No nesting was observed for dmabuf_engine.tx_lock, cache_lock,
+ * submit_lock, credit_lock or progress_lock. The full module order is in
+ * verbs_internal.h.
+ */
 #define pr_fmt(fmt) "thunderbolt_ibverbs dmabuf: " fmt
 
 #include <linux/dma-buf.h>

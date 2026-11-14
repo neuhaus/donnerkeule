@@ -16,6 +16,8 @@ tbv_link_find_locked(struct tbv_state *state, u32 link_id)
 {
 	struct tbv_configured_link *link;
 
+	lockdep_assert_held(&state->lock);
+
 	list_for_each_entry(link, &state->configured_links, node) {
 		if (link->link_id == link_id)
 			return link;

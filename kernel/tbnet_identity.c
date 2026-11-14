@@ -494,6 +494,8 @@ static int tbv_tbnet_identity_send_arp_reply(struct net_device *dev,
 
 static void tbv_tbnet_identity_disarm_locked(struct tbv_tbnet_identity *identity)
 {
+	lockdep_assert_held(&identity->lock);
+
 	if (identity->rx_handler_registered) {
 		netdev_rx_handler_unregister(identity->tbnet_dev);
 		identity->rx_handler_registered = false;
@@ -527,6 +529,8 @@ static unsigned long tbv_tbnet_identity_packet_state(struct net_device *dev)
 
 static void tbv_tbnet_identity_put_gid_locked(struct tbv_tbnet_identity *identity)
 {
+	lockdep_assert_held(&identity->lock);
+
 	if (identity->gid_dev) {
 		dev_put(identity->gid_dev);
 		identity->gid_dev = NULL;
@@ -541,6 +545,8 @@ tbv_tbnet_identity_refresh_minimal_locked(struct tbv_tbnet_identity *identity)
 {
 	struct net_device *gid_dev;
 	__be32 proxy_ipv4;
+
+	lockdep_assert_held(&identity->lock);
 
 	if (!identity->gid_netdev_name[0]) {
 		tbv_tbnet_identity_put_gid_locked(identity);
@@ -585,6 +591,8 @@ tbv_tbnet_identity_refresh_stock_proxy_locked(struct tbv_tbnet_identity *identit
 	unsigned long packet_state;
 	__be32 proxy_ipv4;
 	int ret;
+
+	lockdep_assert_held(&identity->lock);
 
 	if (!identity->tbnet_netdev_name[0] || !identity->gid_netdev_name[0]) {
 		tbv_tbnet_identity_disarm_locked(identity);
@@ -657,6 +665,8 @@ tbv_tbnet_identity_refresh_stock_proxy_locked(struct tbv_tbnet_identity *identit
 
 static int tbv_tbnet_identity_refresh_locked(struct tbv_tbnet_identity *identity)
 {
+	lockdep_assert_held(&identity->lock);
+
 	switch (identity->mode) {
 	case TBV_TBNET_ID_STOCK_PROXY:
 		return tbv_tbnet_identity_refresh_stock_proxy_locked(identity);

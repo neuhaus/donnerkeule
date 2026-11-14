@@ -99,6 +99,8 @@ static ssize_t tbv_cfgfs_format_ipv4(char *buf, const struct tbv_id_addr *addr)
 
 static int tbv_cfgfs_apply_route_locked(struct tbv_cfgfs_link *link)
 {
+	lockdep_assert_held(&link->lock);
+
 	if (!link->local_src_set || !link->peer_set)
 		return 0;
 

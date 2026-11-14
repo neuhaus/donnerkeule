@@ -12,11 +12,6 @@
 #include "tbv.h"
 
 #define TBV_NATIVE_RING_SIZE 1024
-/* Apple-originated bursts can exhaust a 256-entry RX ring before credits
- * recycle. 1024 entries passed checked Mac-to-Linux UC bursts beyond one full
- * ring while keeping per-direction buffer cost modest.
- */
-#define TBV_APPLE_RING_SIZE 1024
 #define TBV_DATA_FRAME_SIZE SZ_4K
 #define TBV_CONTROL_FRAME_SIZE 256
 #define TBV_CONTROL_QUEUE_MULTIPLIER 4
@@ -32,7 +27,6 @@
  * qps=4/TX-depth=128/64 KiB without reporting a false SQ-full error.
  */
 #define TBV_DATA_QUEUE_MULTIPLIER 64
-#define TBV_DATA_PACKET_POOL_LIMIT 1024
 
 typedef int (*tbv_ring_throttling_fn)(struct tb_ring *ring,
 				      unsigned int interval_nsec);
@@ -64,21 +58,6 @@ void tbv_path_exit_optional_symbols(void)
 	symbol_put(tb_ring_throttling);
 	tbv_ring_throttling = NULL;
 }
-
-static bool apple_tx_raw_mode;
-module_param(apple_tx_raw_mode, bool, 0644);
-MODULE_PARM_DESC(apple_tx_raw_mode,
-		 "Use RAW descriptors for Apple-compatible TX rings; default keeps FRAME descriptors");
-
-static bool apple_tx_e2e;
-module_param(apple_tx_e2e, bool, 0644);
-MODULE_PARM_DESC(apple_tx_e2e,
-		 "Enable E2E flow control on Apple-compatible TX rings");
-
-static bool apple_rx_raw_mode;
-module_param(apple_rx_raw_mode, bool, 0644);
-MODULE_PARM_DESC(apple_rx_raw_mode,
-		 "Compatibility no-op: Apple RAW RX is disabled because raw descriptor boundaries are not yet message-safe");
 
 static uint native_tx_max_inflight = TBV_DATA_TX_MAX_INFLIGHT;
 module_param(native_tx_max_inflight, uint, 0644);
@@ -144,20 +123,12 @@ static u32 tbv_path_tx_inflight_limit(const struct tbv_path *path)
 {
 	u32 limit = TBV_DATA_TX_MAX_INFLIGHT;
 
-	if (path->rail && path->rail->peer &&
-	    path->rail->peer->backend == TBV_BACKEND_NATIVE)
+	if (path->rail && path->rail->peer)
 		limit = READ_ONCE(native_tx_max_inflight);
 	if (!limit)
 		return 0;
 
 	return clamp_t(u32, limit, 1, path->cfg.tx_ring_size);
-}
-
-static u32 tbv_path_data_packet_count(const struct tbv_path *path)
-{
-	u32 count = path->cfg.tx_ring_size * TBV_DATA_QUEUE_MULTIPLIER;
-
-	return min_t(u32, count, TBV_DATA_PACKET_POOL_LIMIT);
 }
 
 static u32 tbv_path_tx_control_frame_reserve(const struct tbv_path *path)
@@ -232,13 +203,6 @@ static void tbv_path_tx_packet_release(struct tbv_tx_packet *packet, int status)
 		return;
 	}
 
-	if (!packet->control && packet->pooled) {
-		spin_lock_irqsave(&path->tx_lock, flags);
-		list_add_tail(&packet->node, &path->tx_data_free);
-		spin_unlock_irqrestore(&path->tx_lock, flags);
-		return;
-	}
-
 	if (!packet->control) {
 		kfree(packet->buf);
 		kfree(packet);
@@ -261,15 +225,7 @@ static void tbv_path_rx_supp_poll_work(struct work_struct *work);
 
 static bool tbv_path_progress_poll_enabled(const struct tbv_path *path)
 {
-	if (!path->rail || !path->rail->peer)
-		return false;
-
-	/*
-	 * Apple FA57 has no transport-level ACK. Early local TX polling can open
-	 * the verbs SQ window before macOS has consumed the previous SEND group.
-	 * Use normal NHI TX callbacks for Apple and reserve polling for native.
-	 */
-	return path->rail->peer->backend == TBV_BACKEND_NATIVE;
+	return path->rail && path->rail->peer;
 }
 
 static void tbv_path_queue_delayed_work(struct tbv_path *path,
@@ -538,64 +494,20 @@ static void tbv_path_finish_raw_stream_if_needed(struct tbv_path *path,
 	spin_unlock_irqrestore(&path->tx_lock, flags);
 }
 
-bool tbv_path_apple_tx_raw_mode(void)
-{
-	return READ_ONCE(apple_tx_raw_mode);
-}
-
-bool tbv_path_apple_rx_raw_mode(void)
-{
-	if (READ_ONCE(apple_rx_raw_mode))
-		pr_warn_once("apple_rx_raw_mode is ignored: Apple RAW RX descriptor boundaries are not message-safe\n");
-	return false;
-}
-
-void tbv_path_default_config(enum tbv_backend_type backend,
-			     struct tbv_path_config *cfg)
+void tbv_path_default_config(struct tbv_path_config *cfg)
 {
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->tx_hop = -1;
 	cfg->rx_hop = -1;
 	cfg->transmit_path = -1;
 	cfg->receive_path = -1;
-
-	switch (backend) {
-	case TBV_BACKEND_APPLE:
-		cfg->tx_ring_size = TBV_APPLE_RING_SIZE;
-		cfg->rx_ring_size = TBV_APPLE_RING_SIZE;
-		cfg->tx_flags = 0;
-		if (!tbv_path_apple_tx_raw_mode())
-			cfg->tx_flags |= RING_FLAG_FRAME;
-		if (READ_ONCE(apple_tx_e2e))
-			cfg->tx_flags |= RING_FLAG_E2E;
-		cfg->rx_flags = RING_FLAG_E2E;
-		if (!tbv_path_apple_rx_raw_mode())
-			cfg->rx_flags |= RING_FLAG_FRAME;
-		cfg->tx_hop = 2;
-		cfg->rx_hop = 2;
-		cfg->transmit_path = 9;
-		cfg->receive_path = 9;
-		if (tbv_path_apple_rx_raw_mode()) {
-			cfg->sof_mask = 0xffff;
-			cfg->eof_mask = 0xffff;
-		} else {
-			cfg->sof_mask = BIT(1);
-			cfg->eof_mask = BIT(2) | BIT(3);
-		}
-		cfg->e2e = true;
-		break;
-
-	case TBV_BACKEND_NATIVE:
-	default:
-		cfg->tx_ring_size = TBV_NATIVE_RING_SIZE;
-		cfg->rx_ring_size = TBV_NATIVE_RING_SIZE;
-		cfg->tx_flags = RING_FLAG_FRAME;
-		cfg->rx_flags = RING_FLAG_FRAME;
-		cfg->sof_mask = BIT(1);
-		cfg->eof_mask = BIT(2) | BIT(3);
-		cfg->e2e = false;
-		break;
-	}
+	cfg->tx_ring_size = TBV_NATIVE_RING_SIZE;
+	cfg->rx_ring_size = TBV_NATIVE_RING_SIZE;
+	cfg->tx_flags = RING_FLAG_FRAME;
+	cfg->rx_flags = RING_FLAG_FRAME;
+	cfg->sof_mask = BIT(1);
+	cfg->eof_mask = BIT(2) | BIT(3);
+	cfg->e2e = false;
 }
 
 void tbv_path_init(struct tbv_path *path,
@@ -611,7 +523,6 @@ void tbv_path_init(struct tbv_path *path,
 	spin_lock_init(&path->tx_lock);
 	INIT_LIST_HEAD(&path->tx_free);
 	INIT_LIST_HEAD(&path->tx_control_free);
-	INIT_LIST_HEAD(&path->tx_data_free);
 	INIT_LIST_HEAD(&path->tx_control_queue);
 	INIT_LIST_HEAD(&path->tx_data_queue);
 	INIT_LIST_HEAD(&path->tx_zcopy_inflight);
@@ -928,11 +839,7 @@ static void tbv_path_rx_complete(struct tb_ring *ring, struct ring_frame *frame,
 		struct tbv_native_data_header hdr;
 		int ret;
 
-		if (path->rail && path->rail->peer &&
-		    path->rail->peer->backend == TBV_BACKEND_APPLE) {
-			tbv_ibdev_rx_apple_frame(state, path, f->buf, len,
-						 frame->sof, frame->eof);
-		} else if (was_raw_payload) {
+		if (was_raw_payload) {
 			return_rx_credits = 1;
 			tbv_path_rx_raw_payload(path, state, f->buf, len);
 		} else {
@@ -1151,56 +1058,6 @@ static void tbv_path_free_control_packets(struct tbv_path *path)
 	INIT_LIST_HEAD(&path->tx_control_free);
 }
 
-static int tbv_path_alloc_data_packets(struct tbv_path *path)
-{
-	struct tbv_tx_packet *packets;
-	u32 count = tbv_path_data_packet_count(path);
-	u32 i;
-
-	if (!path->rail || !path->rail->peer ||
-	    path->rail->peer->backend != TBV_BACKEND_APPLE)
-		return 0;
-
-	packets = kcalloc(count, sizeof(*packets), GFP_KERNEL);
-	if (!packets)
-		return -ENOMEM;
-
-	for (i = 0; i < count; i++) {
-		struct tbv_tx_packet *packet = &packets[i];
-
-		INIT_LIST_HEAD(&packet->node);
-		packet->path = path;
-		packet->buf = kmalloc(TBV_DATA_FRAME_SIZE, GFP_KERNEL);
-		if (!packet->buf)
-			goto err;
-		packet->pooled = true;
-		list_add_tail(&packet->node, &path->tx_data_free);
-	}
-
-	path->tx_data_packets = packets;
-	path->tx_data_packet_count = count;
-	return 0;
-
-err:
-	while (i-- > 0)
-		kfree(packets[i].buf);
-	kfree(packets);
-	INIT_LIST_HEAD(&path->tx_data_free);
-	return -ENOMEM;
-}
-
-static void tbv_path_free_data_packets(struct tbv_path *path)
-{
-	u32 i;
-
-	for (i = 0; i < path->tx_data_packet_count; i++)
-		kfree(path->tx_data_packets[i].buf);
-	kfree(path->tx_data_packets);
-	path->tx_data_packets = NULL;
-	path->tx_data_packet_count = 0;
-	INIT_LIST_HEAD(&path->tx_data_free);
-}
-
 static int tbv_path_post_rx_frame(struct tbv_data_frame *f)
 {
 	struct tbv_path *path = f->path;
@@ -1281,14 +1138,7 @@ int tbv_path_alloc_rings(struct tbv_path *path, struct tb_xdomain *xd,
 		e2e_tx_hop = path->tx_ring->hop;
 
 	path->tx_poll_enabled = tbv_path_progress_poll_enabled(path);
-	/*
-	 * RX frames for the Apple-compatible verbs path carry no per-message
-	 * sequence number. Processing the same RX ring from the normal
-	 * completion path and a supplemental poller can therefore expose later
-	 * frames to the verbs receive queue before earlier frames. Keep RX
-	 * completion single-sourced; TX polling is still used for timely send
-	 * completions.
-	 */
+	/* RX completion stays single-sourced; only TX is polled for progress. */
 	path->rx_supp_poll_enabled = false;
 	path->rx_ring = tb_ring_alloc_rx(xd->tb->nhi, rx_hop,
 					 path->cfg.rx_ring_size,
@@ -1322,15 +1172,10 @@ int tbv_path_alloc_rings(struct tbv_path *path, struct tb_xdomain *xd,
 	ret = tbv_path_alloc_control_packets(path);
 	if (ret)
 		goto err_rx_frames;
-	ret = tbv_path_alloc_data_packets(path);
-	if (ret)
-		goto err_control_packets;
 
 	path->state = TBV_PATH_RING_ALLOCATED;
 	return 0;
 
-err_control_packets:
-	tbv_path_free_control_packets(path);
 err_rx_frames:
 	tbv_path_free_frames(path, false);
 err_tx_frames:
@@ -1473,40 +1318,6 @@ tbv_path_alloc_data_packet(struct tbv_path *path, const void *data, u32 len,
 						  done_ctx);
 	if (!packet)
 		kfree(buf);
-	return packet;
-}
-
-static struct tbv_tx_packet *tbv_path_alloc_pooled_data_packet(
-	struct tbv_path *path, u32 len, tbv_path_tx_done_fn done, void *done_ctx)
-{
-	struct tbv_tx_packet *packet;
-	unsigned long flags;
-
-	spin_lock_irqsave(&path->tx_lock, flags);
-	if (list_empty(&path->tx_data_free)) {
-		spin_unlock_irqrestore(&path->tx_lock, flags);
-		return NULL;
-	}
-
-	packet = list_first_entry(&path->tx_data_free, struct tbv_tx_packet,
-				  node);
-	list_del_init(&packet->node);
-	spin_unlock_irqrestore(&path->tx_lock, flags);
-
-	packet->len = len;
-	packet->done = done;
-	packet->done_ctx = done_ctx;
-	packet->owner_ctx = done_ctx;
-	packet->sof = TBV_DATA_PDF_FRAME_START;
-	packet->eof = TBV_DATA_PDF_FRAME_END;
-	packet->control = false;
-	packet->queued = false;
-	packet->zcopy = false;
-	packet->unmap_dma = false;
-	packet->raw_stream_start = false;
-	packet->raw_stream_end = false;
-	packet->raw_stream_counted = false;
-	packet->start_credit_group_frames = 0;
 	return packet;
 }
 
@@ -1968,8 +1779,7 @@ static void tbv_path_schedule_tx(struct tbv_path *path)
 		memcpy(f->buf, packet->buf, packet->len);
 		seq_assigned = charged_data_credit &&
 			       packet->len >= TBV_NATIVE_DATA_HDR_SIZE &&
-			       path->rail && path->rail->peer &&
-			       path->rail->peer->backend == TBV_BACKEND_NATIVE;
+			       path->rail && path->rail->peer;
 		if (seq_assigned)
 			tbv_wire_put_le16(f->buf +
 					  TBV_NATIVE_DATA_PATH_SEQ_OFFSET,
@@ -2133,61 +1943,6 @@ int tbv_path_send_marked_owned(struct tbv_path *path, void *data, u32 len,
 	if (ret) {
 		kfree(packet->buf);
 		kfree(packet);
-		return ret;
-	}
-	return 0;
-}
-
-int tbv_path_send_marked_fill(struct tbv_path *path, u32 len,
-			      u8 sof, u8 eof, unsigned int send_flags,
-			      tbv_path_tx_fill_fn fill, void *fill_ctx,
-			      tbv_path_tx_done_fn done, void *done_ctx)
-{
-	struct tbv_tx_packet *packet;
-	u8 *buf;
-	int ret;
-
-	if (!fill)
-		return -EINVAL;
-	if (!len || len > TBV_DATA_FRAME_SIZE ||
-	    (send_flags & ~(TBV_PATH_SEND_CONTROL | TBV_PATH_SEND_DEFER |
-			    TBV_PATH_SEND_RESERVED)) ||
-	    (send_flags & TBV_PATH_SEND_CONTROL))
-		return -EINVAL;
-
-	packet = tbv_path_alloc_pooled_data_packet(path, len, done, done_ctx);
-	if (packet) {
-		ret = fill(fill_ctx, packet->buf, len);
-		if (ret) {
-			packet->done = NULL;
-			packet->done_ctx = NULL;
-			tbv_path_tx_packet_release(packet, ret);
-			return ret;
-		}
-	} else {
-		buf = kmalloc(len, GFP_KERNEL);
-		if (!buf)
-			return -ENOMEM;
-		ret = fill(fill_ctx, buf, len);
-		if (ret) {
-			kfree(buf);
-			return ret;
-		}
-		packet = tbv_path_alloc_data_packet_owned(path, buf, len,
-							  done, done_ctx);
-		if (!packet) {
-			kfree(buf);
-			return -ENOMEM;
-		}
-	}
-
-	packet->sof = sof;
-	packet->eof = eof;
-	ret = tbv_path_enqueue_data(path, packet, send_flags);
-	if (ret) {
-		packet->done = NULL;
-		packet->done_ctx = NULL;
-		tbv_path_tx_packet_release(packet, ret);
 		return ret;
 	}
 	return 0;
@@ -2682,7 +2437,6 @@ void tbv_path_destroy(struct tbv_path *path, struct tb_xdomain *xd)
 		path->tx_ring = NULL;
 		path->local_tx_hop = -1;
 	}
-	tbv_path_free_data_packets(path);
 	tbv_path_free_control_packets(path);
 
 	path->state = TBV_PATH_STOPPED;

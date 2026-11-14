@@ -280,7 +280,7 @@ void tbv_control_handle_done(struct tbv_state *state, struct tb_xdomain *source,
 	 * the physical link even when routes on two controllers are equal. */
 	mutex_lock(&state->lock);
 	list_for_each_entry(peer, &state->peers, node) {
-		if (peer->backend != TBV_BACKEND_NATIVE || (source && source != peer->xd) ||
+		if ((source && source != peer->xd) ||
 		    !tbv_control_xdomain_required(peer) || !peer->remote_host_known ||
 		    !peer->xd->local_uuid ||
 		    memcmp(m->src_host, state->native_host_id, 16) ||
@@ -481,8 +481,8 @@ static int tbv_ctrl_alloc(struct tbv_peer *peer)
 	/* Hop 0 belongs to the configuration channel. Some AMD NHIs expose
 	 * only hops 1 and 2; lanes=1 leaves a ring pair for this prototype. */
 	if (!xdomain && peer->xd->tb->nhi->hop_count <=
-	    (peer->state->cfg.requested.lanes_auto ? TBV_NATIVE_MAX_LANES :
-	     peer->state->cfg.requested.lanes_max) + 1) {
+	    (peer->state->cfg.lanes_auto ? TBV_NATIVE_MAX_LANES :
+	     peer->state->cfg.lanes_max) + 1) {
 		pr_warn_once("no spare NHI rings (%u total hops, %u data rails); reserve a pair with lanes=1\n",
 			peer->xd->tb->nhi->hop_count, peer->nr_rails);
 		return -ENOSPC;
@@ -613,7 +613,7 @@ int tbv_control_handle_setup(struct tbv_state *state, struct tb_xdomain *source,
 		return 0;
 	mutex_lock(&state->lock);
 	list_for_each_entry(peer, &state->peers, node) {
-		if (peer->backend != TBV_BACKEND_NATIVE || (source && source != peer->xd) ||
+		if ((source && source != peer->xd) ||
 		    !tbv_ctrl_setup_source(peer, &m) || !peer->remote_control_ring)
 			continue;
 		refcount_inc(&peer->refcnt);
@@ -1329,7 +1329,7 @@ static int tbv_ctrl_bench_run(const char *input)
 	}
 	mutex_lock(&state->lock);
 	list_for_each_entry(peer, &state->peers, node)
-		if (peer->peer_id == peer_id && peer->backend == TBV_BACKEND_NATIVE &&
+		if (peer->peer_id == peer_id &&
 		    peer->remote_host_known && !list_empty(&peer->rails)) {
 			refcount_inc(&peer->refcnt);
 			found = peer;

@@ -11,7 +11,6 @@
 enum tbv_cfg_backend {
 	TBV_CFG_BACKEND_NONE = 0,
 	TBV_CFG_BACKEND_NATIVE = 1,
-	TBV_CFG_BACKEND_APPLE = 2,
 };
 
 enum tbv_cfg_state {

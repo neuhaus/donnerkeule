@@ -2,17 +2,9 @@
 
 #include <linux/errno.h>
 
-#include "transport.h"
+#include "tbv.h"
 
-const struct tbv_backend_ops tbv_native_backend_ops = {
-	.type = TBV_BACKEND_NATIVE,
-	.name = "native-linux",
-	.supports_rc = true,
-	.supports_uc = true,
-	.needs_tbnet_identity = false,
-};
-
-static int tbv_native_validate_config(const struct tbv_cfg_link *link)
+int tbv_native_validate_config(const struct tbv_cfg_link *link)
 {
 	if (link->backend != TBV_CFG_BACKEND_NATIVE)
 		return -EINVAL;
@@ -23,9 +15,3 @@ static int tbv_native_validate_config(const struct tbv_cfg_link *link)
 
 	return 0;
 }
-
-const struct tbv_transport_ops tbv_native_transport_ops = {
-	.type = TBV_BACKEND_NATIVE,
-	.name = "native-linux",
-	.validate_config = tbv_native_validate_config,
-};

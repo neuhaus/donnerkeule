@@ -136,7 +136,6 @@ int tbv_host_dma_address(struct tbv_mr *mr, struct tbv_host_dma_map *map,
 			 u64 offset, u32 bytes, dma_addr_t *address);
 
 struct tbv_state *tbv_ibdev_state(struct ib_device *ibdev);
-enum tbv_backend_type tbv_ibdev_backend(struct ib_device *ibdev);
 void tbv_ibdev_cq_overflow(struct ib_qp *qp);
 
 struct tbv_mr *tbv_mr_get(struct tbv_state *state, u32 key);

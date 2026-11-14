@@ -5,8 +5,7 @@ config THUNDERBOLT_IBVERBS
 	depends on CONFIGFS_FS && INFINIBAND && THUNDERBOLT
 	help
 	  Expose Thunderbolt/USB4 host-to-host DMA paths as an RDMA verbs
-	  device. The driver has separate native Linux and Apple-compatible
-	  protocol backends.
+	  device using the native Linux-to-Linux protocol.
 
 	  This tree is the release-track rewrite. Experimental hardware
 	  probing and debug-only modes should stay out of this driver.

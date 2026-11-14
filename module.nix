@@ -40,6 +40,7 @@
   # to values. No camelCase mapping; whatever you write is what gets emitted.
   managed = cfg.config != false;
   managedConfig = if managed then cfg.config else {};
+  kernelConfig = builtins.removeAttrs managedConfig ["tbnet"];
 
   renderValue = value:
     if value == null
@@ -57,14 +58,15 @@
       (name: value:
         let rendered = renderValue value;
         in lib.optional (rendered != null) "${name}=${rendered}")
-      managedConfig));
+      kernelConfig));
 
-  configuredTbnetIdentity = managedConfig.tbnet_identity or null;
-  configuredTbnet = managedConfig.tbnet or null;
-  configuredTbnetIdentityTbnet = managedConfig.tbnet_identity_tbnet or "thunderbolt0";
-
-  loadStockThunderboltNet =
-    builtins.elem configuredTbnetIdentity ["stock" "stock_proxy"];
+  legacyTbnet = managedConfig.tbnet or null;
+  thunderboltNetPolicy =
+    if cfg.thunderboltNetPolicy != null
+    then cfg.thunderboltNetPolicy
+    else if legacyTbnet == null || legacyTbnet == "auto"
+    then "prefer_rdma"
+    else legacyTbnet;
 
   thunderboltIbverbsModule =
     if cfg.package != null
@@ -83,11 +85,6 @@
     then "1"
     else "0";
 
-  effectiveExpectedProfile =
-    if cfg.check.expectedProfile != null
-    then cfg.check.expectedProfile
-    else managedConfig.profile or null;
-
   checkHelper = pkgs.writeShellApplication {
     name = "thunderbolt-ibverbs-check";
     runtimeInputs = with pkgs; [
@@ -103,7 +100,7 @@
       timeout="${toString cfg.check.timeoutSeconds}"
       min_ready_rails=${lib.escapeShellArg (nullableString cfg.check.minReadyRails)}
       expected_speed=${lib.escapeShellArg (nullableString cfg.check.expectedRailSpeed)}
-      expected_profile=${lib.escapeShellArg (nullableString effectiveExpectedProfile)}
+      expected_profile=${lib.escapeShellArg (nullableString cfg.check.expectedProfile)}
       expected_native_control=${lib.escapeShellArg (nullableString cfg.check.expectedNativeControl)}
       require_verbs="${boolString cfg.check.requireVerbs}"
       fail_on_legacy_ambiguity="${boolString cfg.check.failOnLegacyAmbiguity}"
@@ -223,9 +220,7 @@
       options="''${TBV_OPTIONS:-${renderedModuleOptions}}"
       wait_secs="''${TBV_WAIT_SECS:-${toString cfg.waitSeconds}}"
       check_after_reload="''${TBV_CHECK_AFTER_RELOAD:-${boolString cfg.check.afterReload}}"
-      tbnet_policy="${if configuredTbnet == null then "prefer_rdma" else configuredTbnet}"
-      tbnet_identity="${if configuredTbnetIdentity == null then "off" else configuredTbnetIdentity}"
-      tbnet_identity_tbnet="${configuredTbnetIdentityTbnet}"
+      tbnet_policy="${thunderboltNetPolicy}"
       booted_module="/run/booted-system/kernel-modules/lib/modules/$(uname -r)/extra/thunderbolt_ibverbs.ko"
 
       if [ "''${TBV_ALLOW_NON_BOOTED_MODULE:-0}" != "1" ] &&
@@ -240,15 +235,8 @@
       for opt in $options; do
         case "$opt" in
           tbnet=*) tbnet_policy="''${opt#tbnet=}" ;;
-          tbnet_identity=*) tbnet_identity="''${opt#tbnet_identity=}" ;;
-          tbnet_identity_tbnet=*) tbnet_identity_tbnet="''${opt#tbnet_identity_tbnet=}" ;;
         esac
       done
-
-      if [ "$tbnet_identity" = "minimal_packet" ] && grep -q '^thunderbolt_net ' /proc/modules; then
-        echo "thunderbolt-ibverbs-reload-system: tbnet_identity=minimal_packet must own the ThunderboltIP service from boot; rebuild/reboot with the declarative thunderbolt_net blacklist active" >&2
-        exit 1
-      fi
 
       unbind_tbnet_services() {
         local dev service driver key
@@ -274,27 +262,6 @@
 
       if [ "$tbnet_policy" != "allow" ]; then
         unbind_tbnet_services
-      fi
-
-      case "$tbnet_identity" in
-        stock|stock_proxy)
-          modprobe thunderbolt_net
-          for _ in $(seq 1 20); do
-            if ip link show "$tbnet_identity_tbnet" >/dev/null 2>&1; then
-              ip link set "$tbnet_identity_tbnet" up || true
-              break
-            fi
-            sleep 0.5
-          done
-          ;;
-      esac
-
-      if [ "$tbnet_identity" = "minimal_packet" ]; then
-        unbind_tbnet_services
-        if grep -q '^thunderbolt_net ' /proc/modules; then
-          echo "thunderbolt-ibverbs-reload-system: tbnet_identity=minimal_packet requires thunderbolt_net to be absent at load time; rebuild/reboot with the declarative thunderbolt_net blacklist active" >&2
-          exit 1
-        fi
       fi
 
       softdeps="$(modinfo -F softdep "$module" || true)"
@@ -387,9 +354,22 @@ in {
       default = false;
       description = ''
         Blacklist potentially-interfering kernel modules (currently:
-        thunderbolt_net). Useful when running with tbnet_identity=minimal_packet,
-        which requires thunderbolt_ibverbs to own the ThunderboltIP service
-        from boot. Off by default — set true only when you know you want it.
+        thunderbolt_net). thunderbolt_net takes a DMA ring per controller, so
+        blacklisting it keeps both data rings for thunderbolt_ibverbs. Off by
+        default; set true only when you know you want it.
+      '';
+    };
+
+    thunderboltNetPolicy = lib.mkOption {
+      type = types.nullOr (types.enum ["allow" "prefer_rdma" "block"]);
+      default = null;
+      description = ''
+        What the reload helper does with thunderbolt-net services before it
+        loads thunderbolt_ibverbs: `allow` leaves them bound, `prefer_rdma`
+        and `block` unbind them. This is a NixOS-side setting; the kernel
+        module ignores its own `tbnet` parameter. `null` falls back to a
+        legacy `tbnet` key in `config` (which is no longer passed to the
+        kernel), and otherwise to `prefer_rdma`.
       '';
     };
 
@@ -409,9 +389,6 @@ in {
       default = false;
       example = lib.literalExpression ''
         {
-          profile = "linux_perf";
-          tbnet = "prefer_rdma";
-          tbnet_identity = "off";
           lanes = "2";
           register_verbs = true;
         }
@@ -504,7 +481,7 @@ in {
       expectedProfile = lib.mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Expected profile in debugfs summary. Defaults to the configured `profile` key when checks run.";
+        description = "Deprecated: the module always reports profile linux_perf, so the only value that can pass is \"linux_perf\". When null (the default) the profile is not checked.";
       };
       expectedNativeControl = lib.mkOption {
         type = types.nullOr (types.enum ["source_aware" "legacy"]);
@@ -536,17 +513,22 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    warnings =
+      lib.optional (legacyTbnet != null)
+      "hardware.thunderbolt-ibverbs.config.tbnet is deprecated and no longer passed to the kernel; set hardware.thunderbolt-ibverbs.thunderboltNetPolicy instead."
+      ++ lib.optional (cfg.check.expectedProfile != null)
+      "hardware.thunderbolt-ibverbs.check.expectedProfile is deprecated; the module always reports profile linux_perf.";
+
     assertions = [
+      {
+        assertion = legacyTbnet == null || builtins.elem legacyTbnet ["auto" "allow" "prefer_rdma" "block"];
+        message = "hardware.thunderbolt-ibverbs.config.tbnet must be one of auto, allow, prefer_rdma, block (it is deprecated; prefer thunderboltNetPolicy).";
+      }
       {
         assertion = !cfg.kernel.useProjectKernel || projectPackages ? linux-thunderbolt;
         message = "hardware.thunderbolt-ibverbs.kernel.useProjectKernel requires importing module.nix from the thunderbolt-ibverbs flake.";
       }
     ];
-
-    warnings =
-      lib.optional
-      (managed && configuredTbnetIdentity == "minimal_packet" && !cfg.blacklist.enable)
-      "hardware.thunderbolt-ibverbs: config.tbnet_identity=minimal_packet normally requires thunderbolt_net to be absent at boot. Set hardware.thunderbolt-ibverbs.blacklist.enable = true to blacklist it.";
 
     hardware."thunderbolt-ibverbs" = {
       resolvedPackage = thunderboltIbverbsModule;
@@ -566,7 +548,7 @@ in {
       lib.optional cfg.blacklist.enable "thunderbolt_net";
 
     boot.kernelModules =
-      lib.optionals cfg.loadOnBoot (["ib_uverbs"] ++ lib.optional loadStockThunderboltNet "thunderbolt_net" ++ ["thunderbolt_ibverbs"]);
+      lib.optionals cfg.loadOnBoot ["ib_uverbs" "thunderbolt_ibverbs"];
 
     boot.extraModulePackages = [thunderboltIbverbsModule];
 

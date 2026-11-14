@@ -15,8 +15,6 @@ typedef long long atomic64_t;
 #define DMA_FROM_DEVICE 0
 #define TBV_DATA_FRAME_SIZE 4096u
 #define TBV_DATA_CREDIT_CONTROL_RESERVE 256u
-#define TBV_BACKEND_NATIVE 0
-#define TBV_BACKEND_APPLE 1
 #define TBV_PATH_RING_STARTED 1
 #define TBV_PATH_TUNNEL_ENABLED 2
 /* Public Linux7.3 ring descriptor error flag values. */
@@ -30,7 +28,7 @@ struct tbv_state {
  atomic64_t data_rx_raw_poisoned,data_rx_raw_poison_drop,data_rx_bad_header,data_rx_bad_header_len;
  atomic64_t data_rx_bad_header_path_credit,data_rx_repost_failed,data_rx_lost;
 };
-struct peer {int backend;};
+struct peer {int unused;};
 struct tbv_rail {struct peer *peer;struct {u32 path_id;}key;};
 struct tbv_path {
  struct tbv_rail *rail;bool rx_raw_pending,rx_raw_poisoned,rx_data_seq_valid;
@@ -40,13 +38,12 @@ struct tbv_path {
 };
 struct tbv_data_frame {struct ring_frame frame;struct tbv_path *path;u8 *buf;u64 dma;};
 static struct tbv_state state;
-static unsigned forwarded,raw_calls,apple_calls,reposts,credits,remote_credits;
+static unsigned forwarded,raw_calls,reposts,credits,remote_credits;
 static int repost_error;
 static struct tbv_state *tbv_path_state(struct tbv_path *p){(void)p;return &state;}
 static void *tb_ring_dma_device(struct tb_ring *r){return r;}
 static void dma_sync_single_for_cpu(void *d,u64 dma,u32 n,int dir){(void)d;(void)dma;(void)n;(void)dir;}
 static void tbv_ibdev_rx_native_frame(struct tbv_state *s,struct tbv_path *p,const struct tbv_native_data_header *h,const u8 *b){(void)s;(void)p;(void)h;(void)b;forwarded++;}
-static void tbv_ibdev_rx_apple_frame(struct tbv_state *s,struct tbv_path *p,const void*b,u32 n,u32 a,u32 z){(void)s;(void)p;(void)b;(void)n;(void)a;(void)z;apple_calls++;}
 static void tbv_path_rx_raw_payload(struct tbv_path*p,struct tbv_state*s,const void*b,u32 n){(void)p;(void)s;(void)b;(void)n;raw_calls++;}
 static void tbv_path_rx_start_raw(struct tbv_path*p,const struct tbv_native_data_header*h){(void)h;p->rx_raw_pending=true;}
 static int tbv_path_post_rx_frame(struct tbv_data_frame*f){(void)f;reposts++;return repost_error;}
@@ -55,7 +52,7 @@ static void tbv_path_add_remote_rx_credits(struct tbv_path*p,u32 n){(void)p;remo
 static void tbv_rx_bad_header_parse_note(struct tbv_state*s,struct tbv_path*p,const void*b,u32 n,int ret){(void)p;(void)b;(void)n;(void)ret;s->data_rx_bad_header++;}
 static void tbv_rx_bad_header_note(struct tbv_state*s,struct tbv_path*p,atomic64_t*c,const char*why,const struct tbv_native_data_header*h,u32 n,int ret){(void)p;(void)why;(void)h;(void)n;(void)ret;s->data_rx_bad_header++;(*c)++;}
 #include "helpers.c"
-static struct peer peer={.backend=TBV_BACKEND_NATIVE};
+static struct peer peer;
 static struct tbv_rail rail={.peer=&peer,.key={.path_id=257}};
 static struct tbv_path path;
 static struct tbv_data_frame frame;
@@ -65,7 +62,7 @@ static void reset(void){
  memset(&state,0,sizeof(state));state.verbs_registered=true;
  memset(&path,0,sizeof(path));path.rail=&rail;path.state=TBV_PATH_TUNNEL_ENABLED;path.cfg.rx_ring_size=1024;
  memset(&frame,0,sizeof(frame));frame.path=&path;frame.buf=buffer;frame.frame.size=4096;frame.frame.flags=0xa;
- forwarded=raw_calls=apple_calls=reposts=credits=remote_credits=0;repost_error=0;
+ forwarded=raw_calls=reposts=credits=remote_credits=0;repost_error=0;
 }
 static void packet(u16 seq){
  struct tbv_native_data_header h={.opcode=TBV_NATIVE_DATA_OP_RDMA_WRITE_IMM,.length=4048,.flags=TBV_NATIVE_DATA_F_LAST};

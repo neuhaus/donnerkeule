@@ -6,8 +6,7 @@
 
 static int name_matches(const char *name)
 {
-	return !strncmp(name, "usb4_rdma", strlen("usb4_rdma")) ||
-	       !strncmp(name, "usb4_apple", strlen("usb4_apple"));
+	return !strncmp(name, "usb4_rdma", strlen("usb4_rdma"));
 }
 
 int main(void)
@@ -108,7 +107,7 @@ close:
 		goto out;
 	}
 
-	fprintf(stderr, "no usb4_rdma/usb4_apple device found among %d RDMA devices\n",
+	fprintf(stderr, "no usb4_rdma device found among %d RDMA devices\n",
 		num_devices);
 
 out:

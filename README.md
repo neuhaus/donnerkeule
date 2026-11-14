@@ -132,7 +132,6 @@ Earlier [architecture checkpoint](docs/history/GPU_RDMA_STATUS_2026-10-04.md) is
   [model correctness and performance results](bench/results/2026-10-03-gufo-direct.md)
   are retained.
 - Native Linux-to-Linux verbs transport is the main path.
-- Apple-compatible transport exists, but is still experimental.
 - The module builds against stock kernels from Linux 7.0 onwards; where the
   `tb_ring` layout does not match, the bulk doorbell path
   (`dmabuf_batch_doorbell`) compiles out. The functional floor is Linux 7.2
@@ -241,9 +240,8 @@ When a peer offers its network service, distributions load `thunderbolt_net`
 automatically (by modalias) as soon as a cable is plugged in. It then takes a
 DMA ring of each USB4 controller, which has only two for data, so this module
 gets fewer rails or none; loaded afterwards, `thunderbolt_net` fails with
-`failed to allocate Tx ring` and does no harm. `tbnet=` only sets this
-module's own behavior and does not keep `thunderbolt_net` away. Only root
-can, with `/etc/modprobe.d/`; `blacklist` stops the automatic load (an
+`failed to allocate Tx ring` and does no harm. This module cannot keep
+`thunderbolt_net` away. Only root can, with `/etc/modprobe.d/`; `blacklist` stops the automatic load (an
 explicit `modprobe thunderbolt_net` still works, and IP over Thunderbolt is
 gone while it is blacklisted).
 
@@ -253,7 +251,7 @@ netdev for the RoCE addresses:
 ```text
 # /etc/modprobe.d/thunderbolt-ibverbs.conf
 blacklist thunderbolt_net
-options thunderbolt_ibverbs profile=linux_perf tbnet=prefer_rdma lanes=2 register_verbs=1 roce_netdev=tbv0 native_write_striping=1
+options thunderbolt_ibverbs lanes=2 register_verbs=1 roce_netdev=tbv0 native_write_striping=1
 
 # /etc/modules-load.d/thunderbolt-ibverbs.conf
 thunderbolt_ibverbs
@@ -370,7 +368,6 @@ with the native Linux transport enabled:
 
 ```sh
 sudo modprobe thunderbolt_ibverbs \
-  profile=linux_perf \
   bind_services=1 \
   allocate_rings=1 \
   start_rings=1 \
@@ -383,7 +380,6 @@ If userspace needs a RoCE netdev for GID metadata, pass one explicitly:
 
 ```sh
 sudo modprobe thunderbolt_ibverbs \
-  profile=linux_perf \
   bind_services=1 allocate_rings=1 start_rings=1 \
   negotiate_native=1 enable_tunnels=1 register_verbs=1 \
   roce_netdev=thunderbolt0
@@ -419,8 +415,6 @@ To make a known-good configuration persistent, put the options in
 ## Useful Parameters
 
 ```text
-profile=linux_perf|mac_compat|mixed
-tbnet=auto|allow|prefer_rdma|block
 lanes=auto|N|MIN-MAX
 register_verbs=0|1
 native_fragment_striping=0|1
@@ -433,6 +427,21 @@ nhi_interrupt_throttle_ns=<ns>
 ```
 
 Run `make -C kernel help` for the full parameter list.
+
+The module carries only the native Linux-to-Linux transport (with the optional
+DMA-BUF verbs mode). A load with no options behaves as the old
+`profile=linux_perf tbnet_identity=off` did, except that QPNs on a default
+load now start at 0x900 (previously 0x1900). `compat`, `profile`, `tbnet` and
+`tbnet_identity` are still accepted for one release so existing `modprobe.d`
+files load, and the kernel ignores all four:
+
+- `compat`: `auto` is silent, `off` warns, `force` refuses the load.
+- `profile`: `auto` is silent, `linux_perf` and `mixed` warn, `mac_compat`
+  refuses the load.
+- `tbnet`: `auto` is silent, `allow`, `prefer_rdma` and `block` warn; any
+  other value refuses the load. On NixOS, whether thunderbolt-net services are
+  unbound before a reload is the module's `thunderboltNetPolicy` option.
+- `tbnet_identity`: any value warns once.
 
 Each rail's connection steps (HELLO, READY, rings, tunnel) log at debug
 level; load with `dyndbg=+p` to see them, which also works where kernel
@@ -452,7 +461,7 @@ rails to some USB4 controllers (bit n = domain n). Both hosts need the same
 build. For two cables between two Strix Halo hosts:
 
 ```text
-profile=linux_perf tbnet=prefer_rdma lanes=2 register_verbs=1 native_write_striping=1
+lanes=2 register_verbs=1 native_write_striping=1
 ```
 
 Board notes (Sixunited AXB35 such as the Bosgame M5, and the Framework
@@ -470,7 +479,7 @@ needs a netdev with an IPv4 address; a dummy one per host is enough:
 # both hosts (10.77.0.2 on the second)
 sudo ip link add tbv0 type dummy
 sudo ip addr add 10.77.0.1/24 dev tbv0 && sudo ip link set tbv0 up
-sudo modprobe thunderbolt_ibverbs profile=linux_perf tbnet=prefer_rdma \
+sudo modprobe thunderbolt_ibverbs \
   lanes=2 register_verbs=1 roce_netdev=tbv0 native_write_striping=1
 
 # any rail device will do; its QP stripes over all four rails

@@ -188,7 +188,7 @@
             machine.start()
             machine.wait_for_unit("multi-user.target")
             machine.succeed("test $(uname -r) = '${kernelPackages.kernel.modDirVersion}'")
-            machine.succeed("modprobe thunderbolt_ibverbs profile=linux_perf bind_services=1 register_verbs=1")
+            machine.succeed("modprobe thunderbolt_ibverbs bind_services=1 register_verbs=1")
             machine.succeed("grep '^native_control: ${expectedNativeControl}$' /sys/kernel/debug/thunderbolt_ibverbs/summary")
             machine.succeed("grep '^thunderbolt_ibverbs ' /proc/modules")
             machine.succeed("modinfo thunderbolt_ibverbs")

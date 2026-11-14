@@ -69,15 +69,14 @@ static int test_canonical_native_activates(void)
 	return 0;
 }
 
-static int test_canonical_apple_uses_same_identity_gate(void)
+static int test_only_native_backend_accepted(void)
 {
 	struct tbv_cfg_link link;
 
 	tbv_cfg_link_init(&link, 2);
-	CHECK(configure_canonical(&link, TBV_CFG_BACKEND_APPLE) == 0);
-	CHECK(tbv_cfg_link_seal(&link) == 0);
-	CHECK(link.backend == TBV_CFG_BACKEND_APPLE);
-	CHECK(link.app_selection.device_id == 4);
+	CHECK(tbv_cfg_link_set_backend(&link, TBV_CFG_BACKEND_NONE) == -EINVAL);
+	CHECK(tbv_cfg_link_set_backend(&link, 2) == -EINVAL);
+	CHECK(link.backend == TBV_CFG_BACKEND_NONE);
 
 	return 0;
 }
@@ -153,7 +152,7 @@ static int test_sealed_links_are_immutable(void)
 	CHECK(configure_canonical(&link, TBV_CFG_BACKEND_NATIVE) == 0);
 	CHECK(tbv_cfg_link_seal(&link) == 0);
 	CHECK(tbv_cfg_link_set_route(&link, &route) == -EBUSY);
-	CHECK(tbv_cfg_link_set_backend(&link, TBV_CFG_BACKEND_APPLE) == -EBUSY);
+	CHECK(tbv_cfg_link_set_backend(&link, TBV_CFG_BACKEND_NATIVE) == -EBUSY);
 
 	return 0;
 }
@@ -283,7 +282,7 @@ static int test_release_unpublishes_only_active(void)
 int main(void)
 {
 	CHECK(test_canonical_native_activates() == 0);
-	CHECK(test_canonical_apple_uses_same_identity_gate() == 0);
+	CHECK(test_only_native_backend_accepted() == 0);
 	CHECK(test_partial_links_cannot_activate() == 0);
 	CHECK(test_current_bridge_shape_cannot_seal() == 0);
 	CHECK(test_nccl_workaround_mismatch_cannot_seal() == 0);

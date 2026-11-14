@@ -907,8 +907,7 @@ out:
 
 bool tbv_dmabuf_rail_ready(struct tbv_rail *rail)
 {
-	return rail->peer->backend == TBV_BACKEND_NATIVE &&
-		!READ_ONCE(rail->removing) && !READ_ONCE(rail->rings_stopped) &&
+	return !READ_ONCE(rail->removing) && !READ_ONCE(rail->rings_stopped) &&
 		rail->peer->remote_host_known && tbv_rail_data_ready(rail) &&
 		(!tbv_control_required(rail->peer) || tbv_control_ready(rail->peer));
 }
@@ -1432,8 +1431,6 @@ static void tbv_dmabuf_progress_work(struct work_struct *work)
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 
-		if (peer->backend != TBV_BACKEND_NATIVE)
-			continue;
 		list_for_each_entry(rail, &peer->rails, node) {
 			if (!mutex_trylock(&dmabuf_engine.ring_lock)) {
 				atomic64_inc(&dmabuf_progress_skipped);
@@ -2331,7 +2328,6 @@ static void tbv_dmabuf_credit_notified(struct tbv_state *state,
 	mutex_lock(&state->lock);
 	list_for_each_entry(peer, &state->peers, node) {
 		if ((source && peer->xd != source) ||
-		    peer->backend != TBV_BACKEND_NATIVE ||
 		    !peer->remote_host_known || !peer->xd->remote_uuid ||
 		    memcmp(peer->remote_host_id, m->src_host, 16) ||
 		    memcmp(peer->xd->remote_uuid, m->src_domain, 16))
@@ -2392,7 +2388,6 @@ int tbv_dmabuf_handle_packet(struct tbv_state *state,
 	mutex_lock(&state->lock);
 	list_for_each_entry(peer, &state->peers, node) {
 		if ((source && peer->xd != source) ||
-		    peer->backend != TBV_BACKEND_NATIVE ||
 		    !peer->remote_host_known || !peer->xd->remote_uuid ||
 		    memcmp(peer->remote_host_id, m.src_host, 16) ||
 		    memcmp(peer->xd->remote_uuid, m.src_domain, 16))

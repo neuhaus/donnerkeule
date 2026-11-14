@@ -27,7 +27,6 @@ tbv_link_find_locked(struct tbv_state *state, u32 link_id)
 }
 
 int tbv_link_activate_config(struct tbv_state *state, const char *name,
-			     enum tbv_backend_type backend,
 			     const struct tbv_cfg_link *cfg)
 {
 	struct tbv_configured_link *link;
@@ -40,7 +39,6 @@ int tbv_link_activate_config(struct tbv_state *state, const char *name,
 		return -ENOMEM;
 
 	link->link_id = cfg->link_id;
-	link->backend = backend;
 	link->app_selection = cfg->app_selection;
 	strscpy(link->name, name, sizeof(link->name));
 
@@ -54,11 +52,11 @@ int tbv_link_activate_config(struct tbv_state *state, const char *name,
 	state->configured_link_count++;
 	mutex_unlock(&state->lock);
 
-	pr_info("published %s link=%u backend=%s dev=%u gid=%u\n",
-		link->name, link->link_id, tbv_backend_name(link->backend),
+	pr_info("published %s link=%u backend=native dev=%u gid=%u\n",
+		link->name, link->link_id,
 		link->app_selection.device_id, link->app_selection.gid_index);
 	trace_tbv_active_link(link->name, link->link_id,
-			      tbv_backend_name(link->backend), true,
+			      "native", true,
 			      link->app_selection.device_id,
 			      link->app_selection.port,
 			      link->app_selection.gid_index,
@@ -81,10 +79,10 @@ void tbv_link_deactivate_config(struct tbv_state *state, u32 link_id)
 	if (!link)
 		return;
 
-	pr_info("unpublished %s link=%u backend=%s\n",
-		link->name, link->link_id, tbv_backend_name(link->backend));
+	pr_info("unpublished %s link=%u backend=native\n",
+		link->name, link->link_id);
 	trace_tbv_active_link(link->name, link->link_id,
-			      tbv_backend_name(link->backend), false,
+			      "native", false,
 			      link->app_selection.device_id,
 			      link->app_selection.port,
 			      link->app_selection.gid_index,
@@ -112,9 +110,8 @@ void tbv_link_debugfs_show(struct seq_file *s, struct tbv_state *state)
 		const struct tbv_id_selection *sel = &link->app_selection;
 
 		seq_printf(s,
-			   "link %u name=%s backend=%s dev=%u port=%u gid=%u gid_type=%u addr=%u.%u.%u.%u\n",
+			   "link %u name=%s backend=native dev=%u port=%u gid=%u gid_type=%u addr=%u.%u.%u.%u\n",
 			   link->link_id, link->name,
-			   tbv_backend_name(link->backend),
 			   sel->device_id, sel->port, sel->gid_index,
 			   sel->gid_type, sel->addr.bytes[12],
 			   sel->addr.bytes[13], sel->addr.bytes[14],

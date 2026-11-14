@@ -26,15 +26,13 @@ static int tbv_debugfs_summary_show(struct seq_file *s, void *unused)
 {
 	struct tbv_state *state = s->private;
 
-	seq_printf(s, "profile: %s\n", tbv_profile_name(state->cfg.profile));
-	seq_printf(s, "native_enabled: %u\n", state->cfg.native_enabled);
-	seq_printf(s, "apple_enabled: %u\n", state->cfg.apple_enabled);
-	seq_printf(s, "rc_supported: %u\n", state->cfg.rc_supported);
-	seq_printf(s, "uc_supported: %u\n", state->cfg.uc_supported);
+	seq_puts(s, "profile: linux_perf\n");
+	seq_puts(s, "native_enabled: 1\n");
+	seq_puts(s, "rc_supported: 1\n");
+	seq_puts(s, "uc_supported: 1\n");
 	seq_printf(s, "native_control: %s\n",
 		   tbv_native_control_mode_name(state));
 	seq_printf(s, "native_same_peer_multicable: %s\n",
-		   !state->cfg.native_enabled ||
 		   !state->native_control_registered ? "off" :
 		   state->native_control_source_aware ||
 		   state->native_control_ids ? "enabled" : "limited");
@@ -42,79 +40,15 @@ static int tbv_debugfs_summary_show(struct seq_file *s, void *unused)
 	seq_printf(s, "native_legacy_ambiguous_limited: %lld\n",
 		   atomic64_read(&state->native_legacy_ambiguous_limited));
 	seq_printf(s, "configured_links: %u\n", tbv_link_count(state));
-	seq_printf(s, "tbnet_identity: %s\n",
-		   tbv_tbnet_identity_name(state->cfg.tbnet_identity));
-	mutex_lock(&state->tbnet_identity.lock);
-	seq_printf(s, "tbnet_identity_state: 0x%lx\n",
-		   state->tbnet_identity.state);
-	seq_printf(s, "tbnet_identity_tbnet: %s\n",
-		   state->tbnet_identity.tbnet_netdev_name[0] ?
-		   state->tbnet_identity.tbnet_netdev_name : "<unset>");
-	seq_printf(s, "tbnet_identity_gid: %s\n",
-		   state->tbnet_identity.gid_netdev_name[0] ?
-		   state->tbnet_identity.gid_netdev_name : "<unset>");
-	seq_printf(s, "tbnet_identity_proxy_ipv4: %pI4\n",
-		   &state->tbnet_identity.proxy_ipv4);
-	seq_printf(s, "tbnet_identity_minimal_e2e: %u\n",
-		   state->tbnet_identity.minimal_e2e);
-	seq_printf(s, "tbnet_identity_minimal_apple_only: %u\n",
-		   state->tbnet_identity.minimal_apple_only);
-	seq_printf(s, "tbnet_identity_minimal_neighbor_seen: %u\n",
-		   state->tbnet_identity.minimal_neighbor_seen);
-	seq_printf(s, "tbnet_identity_rx_handler: %u\n",
-		   state->tbnet_identity.rx_handler_registered);
-	seq_printf(s, "tbnet_identity_minimal_started: %u\n",
-		   state->tbnet_identity.minimal_started);
-	seq_printf(s, "tbnet_identity_minimal_login_rx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_login_rx));
-	seq_printf(s, "tbnet_identity_minimal_login_tx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_login_tx));
-	seq_printf(s, "tbnet_identity_minimal_logout_rx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_logout_rx));
-	seq_printf(s, "tbnet_identity_minimal_logout_tx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_logout_tx));
-	seq_printf(s, "tbnet_identity_minimal_status_rx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_status_rx));
-	seq_printf(s, "tbnet_identity_minimal_status_tx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_status_tx));
-	seq_printf(s, "tbnet_identity_minimal_packet_rx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_packet_rx));
-	seq_printf(s, "tbnet_identity_minimal_packet_tx_posted: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_packet_tx_posted));
-	seq_printf(s, "tbnet_identity_minimal_packet_tx: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_packet_tx));
-	seq_printf(s, "tbnet_identity_minimal_packet_tx_errors: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_packet_tx_errors));
-	seq_printf(s, "tbnet_identity_minimal_path_errors: %lld\n",
-		   atomic64_read(&state->tbnet_identity.minimal_path_errors));
-	seq_printf(s, "tbnet_identity_arp_requests: %lld\n",
-		   atomic64_read(&state->tbnet_identity.arp_requests));
-	seq_printf(s, "tbnet_identity_arp_replies: %lld\n",
-		   atomic64_read(&state->tbnet_identity.arp_replies));
-	seq_printf(s, "tbnet_identity_arp_ignored: %lld\n",
-		   atomic64_read(&state->tbnet_identity.arp_ignored));
-	seq_printf(s, "tbnet_identity_arp_errors: %lld\n",
-		   atomic64_read(&state->tbnet_identity.arp_errors));
-	tbv_tbnet_minimal_debugfs_show(s, &state->tbnet_identity);
-	mutex_unlock(&state->tbnet_identity.lock);
-	seq_printf(s, "tbnet_policy: %s\n",
-		   tbv_tbnet_policy_name(state->cfg.requested.tbnet));
 	seq_printf(s, "native_service_count: %u\n",
 		   state->native_dir_count);
-	seq_printf(s, "apple_service_registered: %u\n",
-		   !!state->apple_dir);
 	seq_printf(s, "services_registered: %u\n",
 		   state->services_registered);
 	seq_printf(s, "allocate_rings: %u\n", state->allocate_rings);
 	seq_printf(s, "start_rings: %u\n", state->start_rings);
 	seq_printf(s, "negotiate_native: %u\n", state->negotiate_native);
 	seq_printf(s, "enable_tunnels: %u\n", state->enable_tunnels);
-	seq_printf(s, "apple_rails_wait_tbnet: %u\n",
-		   state->apple_rails_wait_tbnet);
-	seq_printf(s, "apple_rails_pending: %u\n",
-		   READ_ONCE(state->apple_rails_pending));
 	seq_printf(s, "native_data: %u\n", state->native_data);
-	seq_printf(s, "apple_data: %u\n", state->apple_data);
 	seq_printf(s, "native_fragment_striping: %u\n",
 		   state->native_fragment_striping);
 	seq_printf(s, "native_write_striping: %u\n",
@@ -186,14 +120,6 @@ static int tbv_debugfs_summary_show(struct seq_file *s, void *unused)
 		   atomic64_read(&state->data_wr_rnr_retry_exhausted));
 	seq_printf(s, "data_wr_timeout: %lld\n",
 		   atomic64_read(&state->data_wr_timeout));
-	seq_printf(s, "apple_sq_queued: %lld\n",
-		   atomic64_read(&state->apple_sq_queued));
-	seq_printf(s, "apple_sq_dequeued: %lld\n",
-		   atomic64_read(&state->apple_sq_dequeued));
-	seq_printf(s, "apple_sq_full: %lld\n",
-		   atomic64_read(&state->apple_sq_full));
-	seq_printf(s, "apple_sq_flushed: %lld\n",
-		   atomic64_read(&state->apple_sq_flushed));
 	seq_printf(s, "data_tx_accepted: %lld\n",
 		   atomic64_read(&state->data_tx_accepted));
 	seq_printf(s, "data_tx_posted: %lld\n",
@@ -380,28 +306,6 @@ static int tbv_debugfs_summary_show(struct seq_file *s, void *unused)
 		   atomic64_read(&state->data_rx_reorder_window));
 	seq_printf(s, "data_rx_pending_discarded: %lld\n",
 		   atomic64_read(&state->data_rx_pending_discarded));
-	seq_printf(s, "apple_rx_sof: %lld\n",
-		   atomic64_read(&state->apple_rx_sof));
-	seq_printf(s, "apple_rx_eof3: %lld\n",
-		   atomic64_read(&state->apple_rx_eof3));
-	seq_printf(s, "apple_rx_eof_other: %lld\n",
-		   atomic64_read(&state->apple_rx_eof_other));
-	seq_printf(s, "apple_rx_sof_while_active: %lld\n",
-		   atomic64_read(&state->apple_rx_sof_while_active));
-	seq_printf(s, "apple_rx_no_sof_when_idle: %lld\n",
-		   atomic64_read(&state->apple_rx_no_sof_when_idle));
-	seq_printf(s, "apple_rx_eof_without_active: %lld\n",
-		   atomic64_read(&state->apple_rx_eof_without_active));
-	seq_printf(s, "apple_rx_len_overrun: %lld\n",
-		   atomic64_read(&state->apple_rx_len_overrun));
-	seq_printf(s, "apple_rx_raw_crc_error: %lld\n",
-		   atomic64_read(&state->apple_rx_raw_crc_error));
-	seq_printf(s, "apple_rx_resync_dropped: %lld\n",
-		   atomic64_read(&state->apple_rx_resync_dropped));
-	seq_printf(s, "apple_rx_rail_mismatch: %lld\n",
-		   atomic64_read(&state->apple_rx_rail_mismatch));
-	seq_printf(s, "apple_rx_cq_overflow: %lld\n",
-		   atomic64_read(&state->apple_rx_cq_overflow));
 	seq_printf(s, "data_cq_overflow: %lld\n",
 		   atomic64_read(&state->data_cq_overflow));
 	return 0;
@@ -418,8 +322,8 @@ static int tbv_debugfs_peers_show(struct seq_file *s, void *unused)
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 
-		seq_printf(s, "peer %u backend=%s rails=%u native_qp_rr_rail_id=%u domain=%d remote_host=%16phN\n",
-			   peer->peer_id, tbv_backend_name(peer->backend),
+		seq_printf(s, "peer %u backend=native rails=%u native_qp_rr_rail_id=%u domain=%d remote_host=%16phN\n",
+			   peer->peer_id,
 			   peer->nr_rails, peer->native_qp_rr_rail_id,
 			   peer->xd && peer->xd->tb ? peer->xd->tb->index : -1,
 			   peer->remote_host_known ? peer->remote_host_id :
@@ -427,19 +331,10 @@ static int tbv_debugfs_peers_show(struct seq_file *s, void *unused)
 		tbv_control_debugfs_show(s, peer);
 
 		list_for_each_entry(rail, &peer->rails, node) {
-			bool service_ready;
-			bool data_ready;
-
-			if (peer->backend == TBV_BACKEND_APPLE) {
-				service_ready = tbv_rail_apple_service_ready(rail);
-				data_ready = tbv_rail_apple_data_ready(rail);
-			} else {
-				service_ready = tbv_rail_data_ready(rail);
-				data_ready = service_ready;
-			}
+			bool data_ready = tbv_rail_data_ready(rail);
 
 			seq_printf(s,
-				   "  rail=0x%x route=0x%llx local=%u remote=%u path=%u link_speed=%uGb/s link_width=0x%x active=%u service_ready=%u data_ready=%u native_qp_bind_count=%d apple_tunnel_qps=%u state=%s negotiated=%u ready_sent=%u remote_ready=%u attempts=%u last_error=%d local_out=%d local_tx=%d local_rx=%d remote_rail=0x%x remote_out=%d remote_tx=%d remote_rx=%d gpu_stopped=%u\n",
+				   "  rail=0x%x route=0x%llx local=%u remote=%u path=%u link_speed=%uGb/s link_width=0x%x active=%u service_ready=%u data_ready=%u native_qp_bind_count=%d state=%s negotiated=%u ready_sent=%u remote_ready=%u attempts=%u last_error=%d local_out=%d local_tx=%d local_rx=%d remote_rail=0x%x remote_out=%d remote_tx=%d remote_rx=%d gpu_stopped=%u\n",
 				   rail->rail_id, rail->key.route,
 				   rail->key.local_adapter,
 				   rail->key.remote_adapter,
@@ -447,10 +342,9 @@ static int tbv_debugfs_peers_show(struct seq_file *s, void *unused)
 				   rail->link_speed,
 				   rail->link_width,
 				   rail->active,
-				   service_ready,
+				   data_ready,
 				   data_ready,
 				   atomic_read(&rail->native_qp_bind_count),
-				   rail->apple_tunnel_qps,
 				   tbv_path_state_name(rail->path.state),
 				   rail->native_negotiated,
 				   rail->native_ready_sent,

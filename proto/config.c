@@ -56,8 +56,7 @@ int tbv_cfg_link_set_backend(struct tbv_cfg_link *link, tbv_id_u8 backend)
 {
 	if (!tbv_cfg_link_mutable(link))
 		return -EBUSY;
-	if (backend != TBV_CFG_BACKEND_NATIVE &&
-	    backend != TBV_CFG_BACKEND_APPLE)
+	if (backend != TBV_CFG_BACKEND_NATIVE)
 		return -EINVAL;
 
 	link->backend = backend;
@@ -112,8 +111,7 @@ int tbv_cfg_link_seal(struct tbv_cfg_link *link)
 
 	if (!tbv_cfg_link_mutable(link))
 		return -EBUSY;
-	if (link->backend != TBV_CFG_BACKEND_NATIVE &&
-	    link->backend != TBV_CFG_BACKEND_APPLE)
+	if (link->backend != TBV_CFG_BACKEND_NATIVE)
 		return -EINVAL;
 	if (!link->route_set || link->app_gid_count == 0)
 		return -EINVAL;

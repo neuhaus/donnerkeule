@@ -11,23 +11,7 @@
 
 #include "tbv.h"
 
-static void tbv_core_log_backend(enum tbv_backend_type type)
-{
-	const struct tbv_backend_ops *ops = tbv_backend_get(type);
-
-	if (!ops) {
-		pr_warn("missing backend ops for %s\n", tbv_backend_name(type));
-		return;
-	}
-
-	pr_info("backend %s rc=%u uc=%u tbnet_identity=%u\n",
-		ops->name, ops->supports_rc, ops->supports_uc,
-		ops->needs_tbnet_identity);
-}
-
-int tbv_core_init(struct tbv_state *state,
-		  const struct tbv_resolved_config *cfg,
-		  const struct tbv_tbnet_identity_config *identity_cfg)
+int tbv_core_init(struct tbv_state *state, const struct tbv_config *cfg)
 {
 	int ret;
 
@@ -52,38 +36,17 @@ int tbv_core_init(struct tbv_state *state,
 		return -ENOMEM;
 	}
 
-	if (!cfg->native_enabled && !cfg->apple_enabled) {
-		ret = -EINVAL;
-		goto err_destroy_wq;
-	}
-
-	ret = tbv_tbnet_identity_prepare(&state->tbnet_identity, cfg,
-					 identity_cfg);
+	ret = tbv_debugfs_init(state);
 	if (ret)
 		goto err_destroy_wq;
-
-	ret = tbv_debugfs_init(state);
-	if (ret) {
-		tbv_tbnet_identity_stop(&state->tbnet_identity);
-		goto err_destroy_wq;
-	}
 
 	ret = tbv_configfs_start(state);
 	if (ret) {
 		tbv_debugfs_exit(state);
-		tbv_tbnet_identity_stop(&state->tbnet_identity);
 		goto err_destroy_wq;
 	}
 
-	if (cfg->native_enabled)
-		tbv_core_log_backend(TBV_BACKEND_NATIVE);
-
-	if (cfg->apple_enabled)
-		tbv_core_log_backend(TBV_BACKEND_APPLE);
-
-	pr_info("core ready profile=%s rc=%u uc=%u\n",
-		tbv_profile_name(cfg->profile), cfg->rc_supported,
-		cfg->uc_supported);
+	pr_info("core ready rc=1 uc=1\n");
 	return 0;
 
 err_destroy_wq:
@@ -120,7 +83,6 @@ void tbv_core_exit(struct tbv_state *state)
 		pr_warn("unloading with live QP registry entries\n");
 	xa_destroy(&state->verbs_mrs_xa);
 	xa_destroy(&state->verbs_qps_xa);
-	tbv_tbnet_identity_stop(&state->tbnet_identity);
 	mutex_destroy(&state->rail_register_lock);
 	mutex_destroy(&state->lock);
 }

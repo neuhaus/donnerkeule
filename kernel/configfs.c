@@ -10,7 +10,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 
-#include "transport.h"
+#include "tbv.h"
 #include "trace.h"
 
 struct tbv_cfgfs_link {
@@ -53,8 +53,6 @@ static const char *tbv_cfgfs_backend_name(u8 backend)
 	switch (backend) {
 	case TBV_CFG_BACKEND_NATIVE:
 		return "native";
-	case TBV_CFG_BACKEND_APPLE:
-		return "apple";
 	default:
 		return "unset";
 	}
@@ -127,8 +125,6 @@ static ssize_t backend_store(struct config_item *item, const char *buf,
 
 	if (sysfs_streq(buf, "native"))
 		backend = TBV_CFG_BACKEND_NATIVE;
-	else if (sysfs_streq(buf, "apple"))
-		backend = TBV_CFG_BACKEND_APPLE;
 	else
 		return -EINVAL;
 
@@ -366,7 +362,6 @@ static ssize_t seal_store(struct config_item *item, const char *buf,
 			  size_t count)
 {
 	struct tbv_cfgfs_link *link = tbv_cfgfs_to_link(item);
-	const struct tbv_transport_ops *ops;
 	int ret;
 
 	if (!sysfs_streq(buf, "1"))
@@ -377,13 +372,7 @@ static ssize_t seal_store(struct config_item *item, const char *buf,
 	if (ret)
 		goto unlock;
 
-	ops = tbv_transport_get(link->cfg.backend == TBV_CFG_BACKEND_NATIVE ?
-				TBV_BACKEND_NATIVE : TBV_BACKEND_APPLE);
-	if (!ops || !ops->validate_config) {
-		ret = -EINVAL;
-		goto unlock;
-	}
-	ret = ops->validate_config(&link->cfg);
+	ret = tbv_native_validate_config(&link->cfg);
 unlock:
 	mutex_unlock(&link->lock);
 	trace_tbv_cfgfs_link_op(config_item_name(item), "seal", ret);
@@ -393,7 +382,6 @@ unlock:
 struct tbv_cfgfs_publish_ctx {
 	struct tbv_cfgfs_link *link;
 	const char *name;
-	enum tbv_backend_type backend;
 };
 
 static int tbv_cfgfs_publish_link(void *ctx)
@@ -401,7 +389,7 @@ static int tbv_cfgfs_publish_link(void *ctx)
 	struct tbv_cfgfs_publish_ctx *pub = ctx;
 
 	return tbv_link_activate_config(pub->link->state, pub->name,
-					pub->backend, &pub->link->cfg);
+					&pub->link->cfg);
 }
 
 static ssize_t activate_store(struct config_item *item, const char *buf,
@@ -417,8 +405,6 @@ static ssize_t activate_store(struct config_item *item, const char *buf,
 	mutex_lock(&link->lock);
 	pub.link = link;
 	pub.name = config_item_name(item);
-	pub.backend = link->cfg.backend == TBV_CFG_BACKEND_NATIVE ?
-		      TBV_BACKEND_NATIVE : TBV_BACKEND_APPLE;
 	ret = tbv_cfg_link_activate_published(&link->cfg,
 					      tbv_cfgfs_publish_link, &pub);
 	mutex_unlock(&link->lock);

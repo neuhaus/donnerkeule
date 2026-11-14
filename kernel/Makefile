@@ -27,6 +27,13 @@ tbv-probe-without-id := $(call try-run,\
 ifeq ($(tbv-probe-without-id),y)
 ccflags-y += -DTBV_TB_SERVICE_PROBE_WITHOUT_ID
 endif
+tbv-tb-ring-layout := $(call try-run,\
+	$(CC) $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) \
+	-include $(srctree)/include/linux/compiler_types.h \
+	-DMODULE -Werror -c $(src)/compat/tb_ring_layout.c -o "$$TMP",y,n)
+ifeq ($(tbv-tb-ring-layout),y)
+ccflags-y += -DTBV_TB_RING_LAYOUT
+endif
 endif
 
 .PHONY: all clean modules modules_install help
@@ -49,27 +56,16 @@ help:
 	@echo "  modules_install    Install under /lib/modules/\$$(uname -r)/extra/"
 	@echo "  clean              Remove build artifacts"
 	@echo ""
-	@echo "Parameters:"
+	@echo "Build-time parameters:"
 	@echo "  TBV_PROFILING=0      Build without detailed performance tracepoints"
-	@echo "  compat=auto|force|off"
-	@echo "  profile=auto|mac_compat|linux_perf|mixed"
-	@echo "  tbnet=auto|allow|prefer_rdma|block"
-	@echo "  tbnet_identity=auto|stock|stock_proxy|minimal_packet|off"
-	@echo "  tbnet_identity_tbnet=<netdev>"
-	@echo "  tbnet_identity_gid=auto|<netdev>"
-	@echo "  tbnet_identity_minimal_e2e=0|1"
-	@echo "  tbnet_identity_minimal_apple_only=0|1"
-	@echo "  bind_services=0|1"
-	@echo "  allocate_rings=0|1"
-	@echo "  start_rings=0|1"
-	@echo "  negotiate_native=0|1"
-	@echo "  enable_tunnels=0|1"
-	@echo "  register_verbs=0|1"
-	@echo "  native_prtcstns=<u32>"
-	@echo "  apple_prtcstns=<u32>"
-	@echo "  apple_tx_max_inflight_wr=<N>    deprecated compatibility knob; Apple SENDs serialize per QP"
-	@echo "  apple_tx_max_inflight_frames=<N>"
-	@echo "  apple_rx_pending_bytes=<bytes>"
-	@echo "  apple_rx_pending_slots=<N>"
-	@echo "  apple_rx_pending_total_bytes=<bytes>"
-	@echo "  apple_rx_trace=<N>"
+	@echo "  KVER=<release>       Build against another installed kernel"
+	@echo "  KDIR=<path>          Build against a kernel tree outside /lib/modules"
+	@echo ""
+	@echo "Module parameters, generated from MODULE_PARM_DESC in the sources:"
+	@cat *.c | tr '\n\t' '  ' | grep -oE 'MODULE_PARM_DESC\( *[A-Za-z_0-9]+ *, *("[^"]*" *)+\) *;' | \
+		sed -e 's/^MODULE_PARM_DESC([[:space:]]*//' -e 's/)[[:space:]]*;$$//' \
+		    -e 's/"[[:space:]]*"//g' -e 's/[[:space:]]*,[[:space:]]*"/ = /' \
+		    -e 's/"[[:space:]]*$$//' -e 's/[[:space:]][[:space:]]*/ /g' | \
+		sort | sed 's/^/  /'
+	@echo ""
+	@echo "After a build, 'modinfo thunderbolt_ibverbs.ko' is authoritative."

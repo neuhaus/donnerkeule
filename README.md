@@ -65,9 +65,13 @@ docker run --rm -it \
     --cap-add=IPC_LOCK --ulimit memlock=-1 \
     pytorch/pytorch:latest bash
 
-# inside the container — pick .jammy for ubuntu 22.04, .noble for 24.04, .resolute for 26.04:
+# inside the container — take the provider .deb for your container's ubuntu
+# codename (.jammy for 22.04, .noble for 24.04, .resolute for 26.04) from
+# https://github.com/hellas-ai/thunderbolt-ibverbs/releases/latest
+# The asset name carries both the version and the codename, so copy the exact
+# file name from that page rather than guessing it:
 apt install -y ibverbs-utils \
-    https://github.com/hellas-ai/thunderbolt-ibverbs/releases/latest/download/usb4-rdma-provider_0.3.0.jammy_amd64.deb
+    ./usb4-rdma-provider_<version>.<codename>_amd64.deb
 
 ibv_devices
 # device          	   node GUID
@@ -129,8 +133,10 @@ Earlier [architecture checkpoint](docs/GPU_RDMA_STATUS_2026-10-04.md) is retaine
   are retained.
 - Native Linux-to-Linux verbs transport is the main path.
 - Apple-compatible transport exists, but is still experimental.
-- The module builds against stock kernels, but needs Linux 6.14 or newer
-  (or this flake's `linux-thunderbolt` kernel) for the maintainer-tree
+- The module builds against stock kernels from Linux 7.0 onwards; where the
+  `tb_ring` layout does not match, the bulk doorbell path
+  (`dmabuf_batch_doorbell`) compiles out. The functional floor is Linux 7.2
+  (or this flake's `linux-thunderbolt` kernel), for the maintainer-tree
   Thunderbolt/USB4 subsystem changes it relies on.
 - `nhi_interrupt_throttle_ns` is active only on kernels that export
   `tb_ring_throttling()`.

@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/thunderbolt.h>
 #include <linux/timekeeping.h>
+#include <linux/utsname.h>
 #include <rdma/ib_umem.h>
 #include <rdma/ib_verbs.h>
 
@@ -49,20 +50,21 @@ MODULE_PARM_DESC(dmabuf_poll_control,
 	"Also progress existing XDomain control rings while a verbs QP exists; requires dmabuf_poll_us");
 
 /*
- * Opt-in for the AMD 158d/158e NHI ring ABI. The tb_ring layout is checked at
- * build time; it was qualified on Linux 7.2.6 (Ubuntu, Framework Desktop),
- * 7.2.11 (Fedora, Sixunited AXB35 / Bosgame M5) and 7.3.3 (Fedora, Bosgame
- * M5). 7.3 adds tb_ring.lock_key at the end, which is empty without lockdep.
- * Other kernels compile it out.
+ * Opt-in for the AMD 158d/158e NHI ring ABI. kernel/compat/tb_ring_layout.c
+ * probes the tb_ring and tb_nhi layout at build time and defines
+ * TBV_TB_RING_LAYOUT only when it matches; any other layout, including a
+ * lockdep kernel where tb_ring.lock_key is not empty, compiles the path out.
+ * It was qualified on Linux 7.2.6 (Ubuntu, Framework Desktop), 7.2.11
+ * (Fedora, Sixunited AXB35 / Bosgame M5) and 7.3.3 (Fedora, Bosgame M5);
+ * other kernels with a matching layout warn at load.
  */
-#if defined(CONFIG_X86_64) && LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0) && \
-	LINUX_VERSION_CODE < KERNEL_VERSION(7, 4, 0)
+#if defined(CONFIG_X86_64) && defined(TBV_TB_RING_LAYOUT)
 #define TBV_BULK_NHI_ABI 1
 #endif
 static bool dmabuf_batch_doorbell;
 module_param(dmabuf_batch_doorbell, bool, 0444);
 MODULE_PARM_DESC(dmabuf_batch_doorbell,
-	"Publish a data-ring descriptor group with one MMIO doorbell on AMD 158d/158e NHIs (Linux 7.2.x)");
+	"Publish a data-ring descriptor group with one MMIO doorbell on AMD 158d/158e NHIs; needs the probed tb_ring layout (x86_64, qualified on 7.2.6, 7.2.11, 7.3.3)");
 static uint dmabuf_post_burst = 16;
 module_param(dmabuf_post_burst, uint, 0444);
 MODULE_PARM_DESC(dmabuf_post_burst, "Frames posted per rail turn, 1..512; default 16");
@@ -1130,6 +1132,11 @@ struct tbv_bulk_desc {
 static int tbv_dmabuf_post_bulk(struct tbv_dmabuf_lane *lane, bool tx,
 			       u32 first, u32 count)
 {
+#ifndef TBV_BULK_NHI_ABI
+	if (!dmabuf_batch_doorbell || count < 2)
+		return -EAGAIN;
+	return -EOPNOTSUPP;
+#else
 	struct tb_ring *ring = tx ? lane->rail->path.tx_ring : lane->rail->path.rx_ring;
 	struct tbv_bulk_desc *descs;
 	struct pci_dev *pdev;
@@ -1137,16 +1144,13 @@ static int tbv_dmabuf_post_bulk(struct tbv_dmabuf_lane *lane, bool tx,
 	u32 n, head, available;
 	void __iomem *doorbell;
 
-	if (!dmabuf_batch_doorbell || count < 2)
-		return -EAGAIN;
-#ifndef TBV_BULK_NHI_ABI
-	return -EOPNOTSUPP;
-#else
 	BUILD_BUG_ON(sizeof(struct tbv_bulk_desc) != 16);
 	BUILD_BUG_ON(sizeof(struct tb_ring) != 184);
 	BUILD_BUG_ON(offsetof(struct tb_ring, descriptors) != 32);
 	BUILD_BUG_ON(offsetof(struct tb_ring, in_flight) != 64);
-#endif
+
+	if (!dmabuf_batch_doorbell || count < 2)
+		return -EAGAIN;
 	if (first > lane->count || count > lane->count - first)
 		return -EINVAL;
 	if (!dev_is_pci(ring->nhi->dev))
@@ -1217,6 +1221,7 @@ static int tbv_dmabuf_post_bulk(struct tbv_dmabuf_lane *lane, bool tx,
 fallback:
 	atomic64_inc(&dmabuf_bulk_fallback);
 	return -EAGAIN;
+#endif
 }
 
 static int tbv_dmabuf_lane_post(struct tbv_dmabuf_lane *lane, bool tx,
@@ -1346,6 +1351,9 @@ static void tbv_dmabuf_progress_stop(void)
  * The NHI ABI is the same pinned, opt-in ABI as bulk publication above. */
 static bool tbv_dmabuf_ring_ready(struct tb_ring *ring)
 {
+#ifndef TBV_BULK_NHI_ABI
+	return true;
+#else
 	struct tbv_bulk_desc *descs;
 	struct pci_dev *pdev;
 	unsigned long flags;
@@ -1374,6 +1382,7 @@ static bool tbv_dmabuf_ring_ready(struct tb_ring *ring)
 	}
 	spin_unlock_irqrestore(&ring->lock, flags);
 	return ready;
+#endif
 }
 
 /* Hop zero belongs to the kernel XDomain control channel. Its ring pointers
@@ -3159,6 +3168,19 @@ void tbv_dmabuf_disconnect(struct tbv_rail *rail)
 	tbv_dmabuf_cache_purge(rail);
 }
 
+#ifdef TBV_BULK_NHI_ABI
+static bool tbv_bulk_qualified(void)
+{
+	switch (LINUX_VERSION_CODE) {
+	case KERNEL_VERSION(7, 2, 6):
+	case KERNEL_VERSION(7, 2, 11):
+	case KERNEL_VERSION(7, 3, 3):
+		return true;
+	}
+	return false;
+}
+#endif
+
 int tbv_dmabuf_start(struct tbv_state *state)
 {
 	if (!dmabuf_verbs)
@@ -3166,8 +3188,14 @@ int tbv_dmabuf_start(struct tbv_state *state)
 	if (!dmabuf_post_burst || dmabuf_post_burst > TBV_DMABUF_BATCH_FRAMES)
 		return -EINVAL;
 #ifndef TBV_BULK_NHI_ABI
-	if (dmabuf_batch_doorbell)
+	if (dmabuf_batch_doorbell) {
+		pr_err("dmabuf_batch_doorbell=1 needs the AMD NHI tb_ring layout on x86_64, which this kernel build does not have\n");
 		return -EOPNOTSUPP;
+	}
+#else
+	if (dmabuf_batch_doorbell && !tbv_bulk_qualified())
+		pr_warn_once("dmabuf_batch_doorbell on unqualified kernel %s (qualified: 7.2.6, 7.2.11, 7.3.3)\n",
+			     init_utsname()->release);
 #endif
 	if (dmabuf_poll_us && (dmabuf_poll_us < 10 || dmabuf_poll_us > 10000))
 		return -EINVAL;

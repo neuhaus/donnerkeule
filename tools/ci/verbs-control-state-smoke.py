@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise the production completion handlers without a Linux test host.
+"""Exercise the control-transaction plumbing and fault injection.
 
-Compiles their actual C bodies with simulated lists, locks and completions.
-This checks transaction state, not kernel concurrency, DMA, or ABI compilation.
+Compiles the actual C bodies with simulated lists, locks and completions. The
+per-transaction decisions (capability formula, DONE/reply ordering, wire
+matching) live in proto/ctrl_txn.h and are tested by ctrl-txn-smoke.c; this
+keeps the kernel wrappers around them: the module-parameter capability
+wrappers and tbv_control_ready, end-to-end reply matching through
+tbv_ctrl_reply, close, fail/wake, and dmabuf_fault rules.
 """
 import os
 import shlex
@@ -28,8 +32,8 @@ functions = "\n".join(
     extract(rf"^(?:static )?(?:void|int|bool) {name}\([\s\S]*?^\}}")
     for name in ("tbv_control_enabled", "tbv_control_push_enabled",
                  "tbv_control_xdomain_required", "tbv_control_required",
-                 "tbv_control_ready", "tbv_ctrl_fail", "tbv_ctrl_reply", "tbv_control_close",
-                 "tbv_control_wait_done")
+                 "tbv_control_ready", "tbv_ctrl_fail", "tbv_ctrl_reply",
+                 "tbv_control_close", "tbv_control_wait_done")
 )
 
 fault_decl = "\n".join(extract(pattern) for pattern in (
@@ -47,7 +51,7 @@ shim = r"""
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "proto/verbs_dmabuf.h"
+#include "proto/ctrl_txn.h"
 #include "tools/ci/perf-noop.h"
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -127,7 +131,7 @@ static struct tbv_ctrl_pending *open_pending(struct tbv_control *ctrl, uint64_t 
     p->key.hdr.length = 8192;
     p->key.bytes = 4096;
     p->key.lanes[0].path = 8;
-    p->expected = TBV_DMABUF_PREPARE;
+    p->txn.expected = TBV_DMABUF_PREPARE;
     p->node.prev = ctrl->pending.prev;
     p->node.next = &ctrl->pending;
     ctrl->pending.prev->next = &p->node;
@@ -155,8 +159,8 @@ int main(void) {
     struct tbv_dmabuf_wire m, late;
     ctrl.pending.next = ctrl.pending.prev = &ctrl.pending;
     ctrl.ready = true;
-    /* Mixed capabilities must preserve the legacy path. Negotiated rings
-     * take precedence; a changed transport must never reuse a tracker. */
+    /* Module parameters and peer capabilities through the kernel wrappers;
+     * a tracker built for the other transport is never ready. */
     for (unsigned int flags = 0; flags < 16; flags++) {
         bool ring = (flags & 3) == 3;
         bool push = (flags & 12) == 12 && !ring;
@@ -165,6 +169,8 @@ int main(void) {
         dmabuf_push_done = flags & 4;
         peer.remote_push_done = flags & 8;
         dmabuf_verbs = true;
+        assert(tbv_control_enabled() == (bool)(flags & 1));
+        assert(tbv_control_push_enabled() == (bool)(flags & 4));
         assert(tbv_control_xdomain_required(&peer) == push);
         assert(tbv_control_required(&peer) == (ring || push));
         peer.dmabuf_control = &ctrl;
@@ -172,29 +178,32 @@ int main(void) {
         assert(tbv_control_ready(&peer));
         ctrl.xdomain = !push;
         assert(!tbv_control_ready(&peer));
+        ctrl.xdomain = push;
+        ctrl.failure = -EIO;
+        assert(!tbv_control_ready(&peer));
+        ctrl.failure = 0;
         dmabuf_verbs = false;
-        assert(!tbv_control_required(&peer));
+        assert(!tbv_control_enabled() && !tbv_control_push_enabled());
+        assert(!tbv_control_xdomain_required(&peer) && !tbv_control_required(&peer));
     }
+    peer.dmabuf_control = NULL;
+    assert(!tbv_control_ready(&peer));
     p = open_pending(&ctrl, 100);
     other = open_pending(&ctrl, 101);
-    assert(tbv_control_wait_done(p, 0) == TBV_DMABUF_BUSY);
+    assert(ctrl.nr_pending == 2);
     m = done(p, TBV_DMABUF_DONE);
     late = m;
-    deliver(&ctrl, &m); /* DONE precedes READY and local TX completion. */
+    deliver(&ctrl, &m); /* Dispatched to its own tracker only. */
+    assert(p->done.calls == 1 && !other->done.calls);
+    assert(ctrl.counters[CTRL_DONE_RX] == 1);
     assert(tbv_control_wait_done(p, 0) == TBV_DMABUF_DONE);
-    assert(!p->reply.calls && !other->done.calls);
-    m.status = -EIO;
-    deliver(&ctrl, &m); /* Duplicate must not replace the first result. */
-    assert(p->done.calls == 1 && p->done_status == TBV_DMABUF_DONE);
     m = p->key;
     m.op = TBV_DMABUF_PREPARE | TBV_DMABUF_REPLY;
     deliver(&ctrl, &m);
-    assert(p->reply.calls == 1 && p->status == TBV_DMABUF_READY);
-    assert(tbv_control_wait_done(p, 0) == TBV_DMABUF_DONE);
-    tbv_control_close(p);
-    deliver(&ctrl, &late); /* Closed tracker cannot be touched again. */
-    assert(!other->done.calls);
+    assert(p->reply.calls == 1 && !other->reply.calls);
+    /* End-to-end matching: any key field off by one reaches no tracker. */
     for (unsigned int field = 0; field < 8; field++) {
+        uint64_t unmatched = ctrl.counters[CTRL_UNMATCHED];
         m = done(other, TBV_DMABUF_DONE);
         switch (field) {
         case 0: m.token++; break;
@@ -207,26 +216,16 @@ int main(void) {
         case 7: m.hdr.rkey++; break;
         }
         deliver(&ctrl, &m);
-        assert(tbv_control_wait_done(other, 0) == TBV_DMABUF_BUSY);
+        assert(ctrl.counters[CTRL_UNMATCHED] == unmatched + 1);
+        assert(!other->done.calls && tbv_control_wait_done(other, 0) == TBV_DMABUF_BUSY);
     }
-    m = done(other, TBV_DMABUF_BUSY); /* No positive interim status is DONE. */
+    tbv_control_close(p);
+    assert(ctrl.nr_pending == 1);
+    deliver(&ctrl, &late); /* Closed tracker cannot be touched again. */
+    assert(ctrl.counters[CTRL_UNMATCHED] == 9 && !other->done.calls);
+    m = done(other, TBV_DMABUF_BUSY); /* Malformed DONE is counted, not applied. */
     deliver(&ctrl, &m);
     assert(ctrl.counters[CTRL_BAD] == 1 && !other->done.calls);
-    /* Lost notification: STATUS may confirm placement, without waking DONE. */
-    other->expected = TBV_DMABUF_STATUS;
-    other->replied = false;
-    m = other->key;
-    m.op = TBV_DMABUF_STATUS | TBV_DMABUF_REPLY;
-    m.status = TBV_DMABUF_DONE;
-    deliver(&ctrl, &m);
-    assert(other->replied && other->status == TBV_DMABUF_DONE);
-    assert(tbv_control_wait_done(other, 0) == TBV_DMABUF_BUSY);
-    m = done(other, -EACCES);
-    deliver(&ctrl, &m);
-    assert(tbv_control_wait_done(other, 0) == -EACCES);
-    m.status = TBV_DMABUF_DONE;
-    deliver(&ctrl, &m);
-    assert(tbv_control_wait_done(other, 0) == -EACCES);
     tbv_ctrl_fail(&ctrl, -ENOTCONN);
     assert(!ctrl.ready && other->reply.calls && other->done.calls);
     assert(tbv_control_wait_done(other, 0) == -ENOTCONN);
@@ -255,7 +254,7 @@ int main(void) {
         assert(!tbv_fault_parse(drop) && fault_armed == 1 && !tbv_fault_parse(clear) && !fault_armed);
         assert(tbv_fault_take(FAULT_COMMIT, &ms) == FAULT_NONE);
     }
-    puts("Verbs control state: PASS (capabilities, early/duplicate/late DONE, generation/batch isolation, errors, STATUS, disconnect)");
+    puts("Verbs control state: PASS (capability wrappers, ready, matching, dispatch, late DONE after close, malformed DONE, disconnect, fault rules)");
     return 0;
 }
 """

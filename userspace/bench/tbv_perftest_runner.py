@@ -214,11 +214,6 @@ FATAL_COUNTERS = [
     "data_cq_overflow",
 ]
 
-APPLE_RDMA_DEV_PREFIX = "rdma_en"
-APPLE_UC_GID_INDEX = 1
-APPLE_UC_MTU = 1024
-APPLE_UC_QUEUE_DEPTH = 32
-
 CSV_FIELDS = [
     "timestamp_utc",
     "plan",
@@ -300,22 +295,9 @@ def require_env(name: str) -> str:
 
 RDMA_CORE = require_env("TBV_RDMA_CORE")
 PERFTEST = require_env("TBV_PERFTEST")
-PERFTEST_DARWIN = os.environ.get("TBV_PERFTEST_DARWIN", "")
 
-
-# Set once per run by detect_systems(); maps hostname -> "Linux" / "Darwin".
-HOST_SYSTEM: dict[str, str] = {}
 SSH_CONFIG = ""
 SSH_OPTIONS: list[str] = []
-
-
-def perftest_for(host: str) -> str:
-    return PERFTEST_DARWIN if HOST_SYSTEM.get(host) == "Darwin" else PERFTEST
-
-
-def rdma_core_for(host: str) -> str:
-    # Darwin uses dyld dynamic-lookup; no rdma-core build, no LD_LIBRARY_PATH.
-    return "" if HOST_SYSTEM.get(host) == "Darwin" else RDMA_CORE
 
 
 def ssh_args(target: str, command: str) -> list[str]:
@@ -326,18 +308,7 @@ def run_ssh(target: str, command: str, *, check: bool = True, timeout: int | Non
     return run_local(ssh_args(target, command), check=check, timeout=timeout)
 
 
-def detect_system(host: str) -> str:
-    """Return 'Linux' or 'Darwin' for the host via `uname -s`."""
-    out = run_ssh(host, "uname -s", check=False, timeout=10).stdout.strip()
-    return out or "Linux"
-
-
 def copy_tools(host: str) -> None:
-    if HOST_SYSTEM.get(host) == "Darwin":
-        # Darwin closures are built natively (via remote builder); the
-        # linux closure isn't substitutable here. The mac already has its
-        # perftest path in its own nix store.
-        return
     run_local(["nix-copy-closure", "--to", host, RDMA_CORE, PERFTEST], check=True)
 
 
@@ -483,7 +454,7 @@ def collect_telemetry(host: str, dev: str, backend: str | None, netdev: str | No
             timeout=15,
         ).stdout
     else:
-        # No rdma-core path configured for this host (e.g. Darwin); ibv_devinfo
+        # No rdma-core path configured for this host; ibv_devinfo
         # isn't available to invoke.
         devinfo = "(skipped: no rdma-core path)"
     params = collect_params(host)
@@ -565,25 +536,6 @@ def parse_case_options(case: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def cap_option_string(value: str | None, cap: int) -> str:
-    if value is None:
-        return str(cap)
-    try:
-        return str(min(int(value), cap))
-    except ValueError:
-        return value
-
-
-def effective_case_options(case: dict[str, Any], pair_has_apple_rdma: bool) -> dict[str, str]:
-    opts = parse_case_options(case)
-    if pair_has_apple_rdma and case_connection(case) == "UC":
-        opts.setdefault("mtu", str(APPLE_UC_MTU))
-        if perftest_verb(case) == "send":
-            opts["tx_depth"] = cap_option_string(opts.get("tx_depth"), APPLE_UC_QUEUE_DEPTH)
-            opts["rx_depth"] = cap_option_string(opts.get("rx_depth"), APPLE_UC_QUEUE_DEPTH)
-    return opts
-
-
 def strip_option(argv: list[str], flags: set[str]) -> list[str]:
     out: list[str] = []
     i = 0
@@ -617,42 +569,11 @@ def option_value(argv: list[str], flags: set[str]) -> str | None:
     return None
 
 
-def append_default_option(argv: list[str], flags: set[str], flag: str, value: int) -> None:
-    if option_value(argv, flags) is None:
-        argv.extend([flag, str(value)])
-
-
-def cap_int_option(argv: list[str], flags: set[str], flag: str, value: int) -> list[str]:
-    current = option_value(argv, flags)
-    if current is None:
-        argv.extend([flag, str(value)])
-        return argv
-    try:
-        capped = min(int(current), value)
-    except ValueError:
-        return argv
-    argv = strip_option(argv, flags)
-    argv.extend([flag, str(capped)])
-    return argv
-
-
-def case_connection(case: dict[str, Any]) -> str:
-    argv = [str(x) for x in case.get("argv", [])]
-    return (option_value(argv, {"--connection", "-c"}) or "RC").upper()
-
-
-def is_apple_rdma_dev(dev: str) -> bool:
-    return dev.startswith(APPLE_RDMA_DEV_PREFIX)
-
-
 def build_perftest_command(
     case: dict[str, Any],
     *,
     perftest_path: str,
     rdma_lib: str,
-    pair_has_darwin: bool,
-    pair_has_apple_rdma: bool,
-    host_is_darwin: bool,
     dev: str,
     gid_index: int,
     port: int,
@@ -664,16 +585,7 @@ def build_perftest_command(
         [str(x) for x in case.get("argv", [])],
         {"--ib-dev", "-d", "--gid-index", "-x", "--port", "-p", "--out_json_file"},
     )
-    if pair_has_apple_rdma and case_connection(case) == "UC":
-        append_default_option(argv, {"--mtu", "-m"}, "--mtu", APPLE_UC_MTU)
-        if perftest_verb(case) == "send":
-            argv = cap_int_option(argv, {"--tx-depth", "-t"}, "--tx-depth", APPLE_UC_QUEUE_DEPTH)
-            argv = cap_int_option(argv, {"--rx-depth", "-r"}, "--rx-depth", APPLE_UC_QUEUE_DEPTH)
     argv.extend(["--ib-dev", dev, "--gid-index", str(gid_index), "--port", str(port), "-F"])
-    if pair_has_darwin and "--use_old_post_send" not in argv:
-        # Apple perftest is built with --disable-ibv_wr_api; force both sides
-        # to use the legacy post-send flow so the negotiated ABI matches.
-        argv.append("--use_old_post_send")
     if perftest_kind(case) == "bw":
         argv.append("--report_gbits")
     if perftest_kind(case) == "bw" and "--bidirectional" in argv and "--report-both" not in argv:
@@ -685,7 +597,7 @@ def build_perftest_command(
     bin_path = f"{perftest_path}/bin/{case['bin']}"
     quoted = " ".join(shlex.quote(str(arg)) for arg in argv)
     lib_prefix = f"LD_LIBRARY_PATH={shlex.quote(rdma_lib + '/lib')} " if rdma_lib else ""
-    timeout_prefix = "" if host_is_darwin else f"timeout {shlex.quote(str(timeout))} "
+    timeout_prefix = f"timeout {shlex.quote(str(timeout))} "
     return (
         "set -euo pipefail; "
         f"mkdir -p {shlex.quote(str(Path(remote_json).parent))}; "
@@ -777,17 +689,10 @@ def run_pair(
     remote_dir = f"/tmp/tbv-perftest/{run_id}"
     server_json = f"{remote_dir}/server.json"
     client_json = f"{remote_dir}/client.json"
-    server_is_darwin = HOST_SYSTEM.get(server) == "Darwin"
-    client_is_darwin = HOST_SYSTEM.get(client) == "Darwin"
-    pair_has_darwin = server_is_darwin or client_is_darwin
-    pair_has_apple_rdma = is_apple_rdma_dev(server_dev) or is_apple_rdma_dev(client_dev)
     server_cmd = build_perftest_command(
         case,
         perftest_path=server_perftest,
         rdma_lib=server_rdma_lib,
-        pair_has_darwin=pair_has_darwin,
-        pair_has_apple_rdma=pair_has_apple_rdma,
-        host_is_darwin=server_is_darwin,
         dev=server_dev,
         gid_index=gid_index,
         port=port,
@@ -799,9 +704,6 @@ def run_pair(
         case,
         perftest_path=client_perftest,
         rdma_lib=client_rdma_lib,
-        pair_has_darwin=pair_has_darwin,
-        pair_has_apple_rdma=pair_has_apple_rdma,
-        host_is_darwin=client_is_darwin,
         dev=client_dev,
         gid_index=gid_index,
         port=port,
@@ -1023,11 +925,8 @@ def main() -> int:
         client: args.client_data_addr or client,
     }
     host_data_addr.update(parse_host_map(args.data_addrs or ""))
-    pair_has_apple_rdma = is_apple_rdma_dev(host_dev[server]) or is_apple_rdma_dev(host_dev[client])
     if args.gid_index is not None:
         gid_index = args.gid_index
-    elif pair_has_apple_rdma:
-        gid_index = APPLE_UC_GID_INDEX
     else:
         gid_index = int(defaults["gidIndex"])
     backend = args.backend if args.backend is not None else defaults.get("backend")
@@ -1055,13 +954,6 @@ def main() -> int:
         for idx, case in enumerate(cases, start=1):
             print(f"{idx:03d} {case['name']} {case['bin']} {' '.join(case.get('argv', []))}")
         return 0
-
-    if not args.dry_run:
-        for host in sorted({server, client}):
-            HOST_SYSTEM[host] = detect_system(host)
-            print(f"tbv-perftest: {host} system={HOST_SYSTEM[host]}", flush=True)
-        if "Darwin" in HOST_SYSTEM.values() and not PERFTEST_DARWIN:
-            die("a host reports Darwin but TBV_PERFTEST_DARWIN is unset; the wrapper was built without a darwin perftest reference")
 
     if copy and not args.dry_run:
         for host in sorted({server, client}):
@@ -1098,8 +990,8 @@ def main() -> int:
                     flush=True,
                 )
 
-        initial_server = collect_telemetry(server, host_dev[server], backend, netdev, rdma_core_for(server))
-        initial_client = collect_telemetry(client, host_dev[client], backend, netdev, rdma_core_for(client))
+        initial_server = collect_telemetry(server, host_dev[server], backend, netdev, RDMA_CORE)
+        initial_client = collect_telemetry(client, host_dev[client], backend, netdev, RDMA_CORE)
         assert_topology(server, initial_server, expect_rails, expect_speed)
         assert_topology(client, initial_client, expect_rails, expect_speed)
         print(
@@ -1126,12 +1018,12 @@ def main() -> int:
                             f"{tag}-r{repeat_index:02d}-"
                             f"{run_index:04d}-{case['name'].replace('.', '-')}-{direction_name}"
                         )
-                        before_server = collect_telemetry(run_server, host_dev[run_server], backend, netdev, rdma_core_for(run_server))
-                        before_client = collect_telemetry(run_client, host_dev[run_client], backend, netdev, rdma_core_for(run_client))
+                        before_server = collect_telemetry(run_server, host_dev[run_server], backend, netdev, RDMA_CORE)
+                        before_client = collect_telemetry(run_client, host_dev[run_client], backend, netdev, RDMA_CORE)
                         assert_topology(run_server, before_server, expect_rails, expect_speed)
                         assert_topology(run_client, before_client, expect_rails, expect_speed)
 
-                        opts = effective_case_options(case, pair_has_apple_rdma)
+                        opts = parse_case_options(case)
                         row: dict[str, Any] = {
                             "timestamp_utc": now_utc(),
                             "plan": plan["name"],
@@ -1174,10 +1066,10 @@ def main() -> int:
                             run_id=run_id,
                             server=run_server,
                             client=run_client,
-                            server_perftest=perftest_for(run_server),
-                            client_perftest=perftest_for(run_client),
-                            server_rdma_lib=rdma_core_for(run_server),
-                            client_rdma_lib=rdma_core_for(run_client),
+                            server_perftest=PERFTEST,
+                            client_perftest=PERFTEST,
+                            server_rdma_lib=RDMA_CORE,
+                            client_rdma_lib=RDMA_CORE,
                             server_dev=host_dev[run_server],
                             client_dev=host_dev[run_client],
                             peer_addr=host_data_addr.get(run_server, run_server),
@@ -1187,8 +1079,8 @@ def main() -> int:
                             server_start_delay=float(defaults["serverStartDelay"]),
                         )
                         elapsed = time.monotonic() - start
-                        after_server = collect_telemetry(run_server, host_dev[run_server], backend, netdev, rdma_core_for(run_server))
-                        after_client = collect_telemetry(run_client, host_dev[run_client], backend, netdev, rdma_core_for(run_client))
+                        after_server = collect_telemetry(run_server, host_dev[run_server], backend, netdev, RDMA_CORE)
+                        after_client = collect_telemetry(run_client, host_dev[run_client], backend, netdev, RDMA_CORE)
                         server_delta = delta_ints(after_server["summary_counters"], before_server["summary_counters"])
                         client_delta = delta_ints(after_client["summary_counters"], before_client["summary_counters"])
                         server_rail_delta = delta_ints(after_server["rail_totals"], before_server["rail_totals"])

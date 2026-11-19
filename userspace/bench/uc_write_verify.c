@@ -2,8 +2,8 @@
 /*
  * uc_write_verify - minimal UC RDMA_WRITE payload visibility probe.
  *
- * Used to determine whether Apple's apple-rdma stack actually places WRITE
- * data into the receiver's MR over Thunderbolt. UC has no completion ACK,
+ * Used to determine whether a WRITE actually places data into the
+ * receiver's MR over Thunderbolt. UC has no completion ACK,
  * so a successful sender CQE on its own is meaningless — only memory
  * contents on the receiver answer "did bytes actually arrive?".
  *

@@ -76,6 +76,7 @@ stage_source() {
 		kernel \
 		proto \
 		| tar -C "$stage" -xf -
+	sed -i "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=\"${version}\"/" "$stage/dkms.conf"
 }
 
 make_source_tarball() {

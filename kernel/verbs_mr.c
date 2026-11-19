@@ -558,7 +558,7 @@ struct ib_mr *tbv_reg_user_mr_dmabuf(struct ib_pd *pd, u64 offset,
 	if (dmah)
 		return ERR_PTR(-EOPNOTSUPP);
 #endif
-	if (!tbv_dmabuf_verbs_enabled() || tbv_ibdev_backend(pd->device) != TBV_BACKEND_NATIVE ||
+	if (!tbv_dmabuf_verbs_enabled() ||
 	    access & ~(IB_ACCESS_LOCAL_WRITE | IB_ACCESS_REMOTE_WRITE))
 		return ERR_PTR(-EOPNOTSUPP);
 	if (!length || virt_addr % PAGE_SIZE ||

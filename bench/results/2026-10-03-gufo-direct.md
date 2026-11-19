@@ -172,4 +172,4 @@ The modified module's normal verbs mode has not yet had the additional planned
 compatibility run. Both hosts are idle with direct mode enabled and verbs
 registration disabled; no old Gufo service was restarted.
 
-See the [complete current status and architecture recommendation](../../docs/GPU_RDMA_STATUS_2026-10-04.md).
+See the [complete current status and architecture recommendation](../../docs/history/GPU_RDMA_STATUS_2026-10-04.md).

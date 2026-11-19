@@ -2,7 +2,7 @@
 
 Dieser Bericht dokumentiert den exklusiven ioctl-Pfad vor der Verbs-Integration.
 Der anschließend entwickelte Implementierungsstand hinter normalen MRs und
-Verbs-Operationen wird separat in [GPU_VERBS.md](GPU_VERBS.md) geführt. Die
+Verbs-Operationen wird separat in [GPU_VERBS.md](../GPU_VERBS.md) geführt. Die
 Messungen und offenen Qualifikationen hier beziehen sich auf den älteren Pfad.
 
 ## Ergebnis
@@ -201,9 +201,9 @@ rechtfertigt nicht, den experimentellen Adapter zum Standard zu machen.
 
 ## Nachweise
 
-- [Gufo-Messbericht und Reproduktionsdaten](../bench/results/2026-10-03-gufo-direct.md)
-- [Rohlogs und Prüfer](../bench/results/2026-10-03-gufo-direct/)
-- [Erster reiner GPU/NHI-Hardwaretest](../bench/results/2026-10-02-gpu-direct.md)
+- [Gufo-Messbericht und Reproduktionsdaten](../../bench/results/2026-10-03-gufo-direct.md)
+- [Rohlogs und Prüfer](../../bench/results/2026-10-03-gufo-direct/)
+- [Erster reiner GPU/NHI-Hardwaretest](../../bench/results/2026-10-02-gpu-direct.md)
 - Direkte ABI und Betriebsregeln: `docs/GPU_DIRECT.md`, mit dem `gpu_direct`-Pfad entfernt
 - Gufo: `docs/models/qwen3.8-flash-next/DONNERKEULE.md`, ergänzende Einträge in
   `BENCHMARKS.md`, `QUALITY.md` und `EXPERIMENTS.md`.

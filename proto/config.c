@@ -56,8 +56,7 @@ int tbv_cfg_link_set_backend(struct tbv_cfg_link *link, tbv_id_u8 backend)
 {
 	if (!tbv_cfg_link_mutable(link))
 		return -EBUSY;
-	if (backend != TBV_CFG_BACKEND_NATIVE &&
-	    backend != TBV_CFG_BACKEND_APPLE)
+	if (backend != TBV_CFG_BACKEND_NATIVE)
 		return -EINVAL;
 
 	link->backend = backend;
@@ -112,8 +111,7 @@ int tbv_cfg_link_seal(struct tbv_cfg_link *link)
 
 	if (!tbv_cfg_link_mutable(link))
 		return -EBUSY;
-	if (link->backend != TBV_CFG_BACKEND_NATIVE &&
-	    link->backend != TBV_CFG_BACKEND_APPLE)
+	if (link->backend != TBV_CFG_BACKEND_NATIVE)
 		return -EINVAL;
 	if (!link->route_set || link->app_gid_count == 0)
 		return -EINVAL;
@@ -148,4 +146,27 @@ int tbv_cfg_link_deactivate(struct tbv_cfg_link *link)
 
 	link->state = TBV_CFG_SEALED;
 	return 0;
+}
+
+int tbv_cfg_link_activate_published(struct tbv_cfg_link *link,
+				    tbv_cfg_publish_fn publish, void *ctx)
+{
+	int ret = tbv_cfg_link_activate(link);
+
+	if (ret)
+		return ret;
+
+	ret = publish(ctx);
+	if (ret)
+		tbv_cfg_link_deactivate(link);
+	return ret;
+}
+
+void tbv_cfg_link_release(struct tbv_cfg_link *link,
+			  tbv_cfg_unpublish_fn unpublish, void *ctx)
+{
+	if (link->state != TBV_CFG_ACTIVE)
+		return;
+	unpublish(ctx);
+	tbv_cfg_link_deactivate(link);
 }

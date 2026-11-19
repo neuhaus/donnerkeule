@@ -1,7 +1,6 @@
 { lib
 , pkgs
 , perftest
-, perftestDarwin ? null
 , rdma-core-usb4
 , runnerSrc
 , benchConfig
@@ -25,9 +24,7 @@ let
   bwBins = [ "ib_write_bw" "ib_read_bw" "ib_send_bw" ];
   latBins = [ "ib_write_lat" "ib_read_lat" "ib_send_lat" ];
 
-  # UC bin set, for Apple-compatible runs (macOS Thunderbolt RDMA is UC-only;
-  # `Connection_type: RC` errors on QP modify against rdma_en* devices). No
-  # ib_read_* because UC has no RDMA READ.
+  # UC bin set. No ib_read_* because UC has no RDMA READ.
   bwBinsUc = [ "ib_write_bw" "ib_send_bw" ];
   latBinsUc = [ "ib_write_lat" "ib_send_lat" ];
 
@@ -168,22 +165,16 @@ let
       stopOnFail = false;
     };
     # RC matrix: full coverage for strix↔strix native (RC + UC + RDMA READ).
-    # Apple Thunderbolt RDMA is UC-only, so all these cases fail at
-    # `ibv_modify_qp` RTR when the peer is macOS. For Apple-compatible runs
-    # filter to `--only '*.uc.*' --only 'odd.uc.*' --only 'odd.ud.*'` (or
-    # drop these axes entirely on profiles that only see Apple peers).
     cases =
       mkBwCases { prefix = "bw";   bins = bwBins;  sizes = bwSizes;   qps = allQps; directions = bothDirections; }
       ++ mkBwCases { prefix = "bidi"; bins = bwBins; sizes = bidiSizes; qps = allQps; bidirectional = true; }
       ++ mkLatCases { prefix = "lat"; bins = latBins; sizes = latSizes; directions = bothDirections; }
-      # readouts = ib_read_lat outstanding sweep; RDMA READ is RC-only and
-      # therefore unavailable on Apple peers — keep this axis here for
-      # strix↔strix and skip via `--only '*.uc.*'` when the peer is mac.
+      # readouts = ib_read_lat outstanding sweep; RDMA READ is RC-only.
       ++ mkReadOutCases { prefix = "readouts"; sizes = [ 4096 65536 ]; outs = readOuts; }
 
-      # UC matrix: Apple-compatible BW + LAT + bidi at the same sizes/QPs.
-      # ib_read_bw / ib_read_lat are intentionally absent — RDMA READ
-      # requires RC, which Apple's stack does not implement.
+      # UC matrix: BW + LAT + bidi at the same sizes/QPs.
+      # ib_read_bw / ib_read_lat are intentionally absent: RDMA READ
+      # requires RC.
       ++ mkBwCases { prefix = "bw.uc";   bins = bwBinsUc; sizes = bwSizes;   qps = allQps; directions = bothDirections; connection = "UC"; }
       ++ mkBwCases { prefix = "bidi.uc"; bins = bwBinsUc; sizes = bidiSizes; qps = allQps; bidirectional = true; connection = "UC"; }
       ++ mkLatCases { prefix = "lat.uc"; bins = latBinsUc; sizes = latSizes; directions = bothDirections; connection = "UC"; }
@@ -199,7 +190,6 @@ let
     text = ''
       export TBV_RDMA_CORE=${rdma-core-usb4}
       export TBV_PERFTEST=${perftest}
-      ${lib.optionalString (perftestDarwin != null) "export TBV_PERFTEST_DARWIN=${perftestDarwin}"}
       export PYTHONPATH=${pkgs.writeTextDir "tbv_bench.py" (builtins.readFile ../../userspace/bench/tbv_bench.py)}:"''${PYTHONPATH:-}"
       exec ${pkgs.python3}/bin/python3 -u ${runnerSrc} --plan ${planFile} "$@"
     '';

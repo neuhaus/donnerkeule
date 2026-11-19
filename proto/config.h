@@ -11,7 +11,6 @@
 enum tbv_cfg_backend {
 	TBV_CFG_BACKEND_NONE = 0,
 	TBV_CFG_BACKEND_NATIVE = 1,
-	TBV_CFG_BACKEND_APPLE = 2,
 };
 
 enum tbv_cfg_state {
@@ -47,5 +46,25 @@ int tbv_cfg_link_set_app_gids(struct tbv_cfg_link *link,
 int tbv_cfg_link_seal(struct tbv_cfg_link *link);
 int tbv_cfg_link_activate(struct tbv_cfg_link *link);
 int tbv_cfg_link_deactivate(struct tbv_cfg_link *link);
+
+/*
+ * Activate a sealed link and publish it, rolling the link back to SEALED when
+ * publication fails. The caller supplies publication because that is the only
+ * part that needs the kernel; the ordering lives here so it can be tested
+ * without one.
+ */
+typedef int (*tbv_cfg_publish_fn)(void *ctx);
+
+int tbv_cfg_link_activate_published(struct tbv_cfg_link *link,
+				    tbv_cfg_publish_fn publish, void *ctx);
+
+/*
+ * Release a link: an ACTIVE link is unpublished and then deactivated, any
+ * other state is left alone.
+ */
+typedef void (*tbv_cfg_unpublish_fn)(void *ctx);
+
+void tbv_cfg_link_release(struct tbv_cfg_link *link,
+			  tbv_cfg_unpublish_fn unpublish, void *ctx);
 
 #endif /* TBV_CONFIG_H */

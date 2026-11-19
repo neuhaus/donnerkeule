@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run paired uc_oneway stress cases over SSH.
 
-This runner exists for the Apple-compat SEND fragmentation/window tests that
+This runner exists for the UC SEND fragmentation/window tests that
 perftest does not cover. It keeps sender depth independent from receiver
 receive-post depth, preserves full logs per run, and writes one CSV row per
 case.
@@ -71,9 +71,7 @@ WC_ERROR_RE = re.compile(
     r"opcode=(?P<opcode>\d+) byte_len=(?P<byte_len>\d+)"
 )
 PORT_ACTIVE_RE = re.compile(r"\bstate:\s+PORT_ACTIVE\b")
-APPLE_RDMA_DEV_PREFIX = "rdma_"
-APPLE_RDMA_HOLD_BEFORE_DESTROY_MS = 1000
-APPLE_UC_QUEUE_DEPTH = 32
+UC_QUEUE_DEPTH = 32
 SSH_CONFIG = ""
 SSH_OPTIONS: list[str] = []
 
@@ -123,28 +121,8 @@ def safe_name(value: str) -> str:
     return value or "run"
 
 
-def apple_rdma_pair(receiver_dev: str, sender_dev: str) -> bool:
-    return receiver_dev.startswith(APPLE_RDMA_DEV_PREFIX) or sender_dev.startswith(
-        APPLE_RDMA_DEV_PREFIX
-    )
-
-
-def apple_queue_depth(
-    value: int, receiver_dev: str, sender_dev: str, apple_limit: int
-) -> int:
-    if apple_limit and apple_rdma_pair(receiver_dev, sender_dev):
-        return min(value, apple_limit)
-    return value
-
-
-def hold_before_destroy_ms(
-    args: argparse.Namespace, receiver_dev: str, sender_dev: str
-) -> int:
-    if args.hold_before_destroy_ms >= 0:
-        return args.hold_before_destroy_ms
-    if apple_rdma_pair(receiver_dev, sender_dev):
-        return APPLE_RDMA_HOLD_BEFORE_DESTROY_MS
-    return 0
+def hold_before_destroy_ms(args: argparse.Namespace) -> int:
+    return max(args.hold_before_destroy_ms, 0)
 
 
 def host_tool(args: argparse.Namespace, host: str, role: str) -> str:
@@ -386,20 +364,10 @@ def run_case(
     sender_tool = host_tool(args, sender, "send")
     receiver_tool = host_tool(args, receiver, "recv")
     connect_host = connect_host_for_receiver(args, receiver)
-    hold_ms = hold_before_destroy_ms(args, receiver_dev, sender_dev)
-    recv_depth = apple_queue_depth(
-        args.recv_depth, receiver_dev, sender_dev, args.apple_queue_depth
-    )
-    recv_posts = apple_queue_depth(
-        args.recv_posts, receiver_dev, sender_dev, args.apple_queue_depth
-    )
-    send_depth = apple_queue_depth(
-        send_depth, receiver_dev, sender_dev, args.apple_queue_depth
-    )
+    hold_ms = hold_before_destroy_ms(args)
+    recv_depth = args.recv_depth
+    recv_posts = args.recv_posts
     send_slots = args.send_slots or send_depth
-    send_slots = apple_queue_depth(
-        send_slots, receiver_dev, sender_dev, args.apple_queue_depth
-    )
     if args.check and send_slots < send_depth:
         send_slots = send_depth
     log_prefix = f"{safe_name(args.tag)}-" if args.tag else ""
@@ -574,25 +542,18 @@ def main() -> int:
     parser.add_argument("--sizes", type=parse_csv_ints, default=parse_csv_ints("32768"))
     parser.add_argument("--send-depths", type=parse_csv_ints, default=parse_csv_ints("16,32"))
     parser.add_argument("--send-slots", type=int, default=0)
-    parser.add_argument("--recv-depth", type=int, default=APPLE_UC_QUEUE_DEPTH)
-    parser.add_argument("--recv-posts", type=int, default=APPLE_UC_QUEUE_DEPTH)
+    parser.add_argument("--recv-depth", type=int, default=UC_QUEUE_DEPTH)
+    parser.add_argument("--recv-posts", type=int, default=UC_QUEUE_DEPTH)
     parser.add_argument("--mtus", type=parse_csv_ints, default=parse_csv_ints("4096"))
     parser.add_argument("--count", type=int, default=100000)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument(
-        "--apple-queue-depth",
-        type=int,
-        default=APPLE_UC_QUEUE_DEPTH,
-        help=(
-            "Maximum requested depth for cases involving macOS rdma_* devices; "
-            "0 disables this software cap."
-        ),
-    )
-    parser.add_argument(
+        "--uc-gate",
         "--apple-gate",
+        dest="uc_gate",
         action="store_true",
         help=(
-            "Run the Apple compatibility merge-gate matrix: both directions, "
+            "Run the UC merge-gate matrix: both directions, "
             "4 KiB and 64 KiB checked SENDs, depth/count 256, strict order, "
             "and fail-fast."
         ),
@@ -608,7 +569,7 @@ def main() -> int:
         "--no-preflight",
         dest="preflight",
         action="store_false",
-        help="Disable the automatic preflight used by --apple-gate.",
+        help="Disable the automatic preflight used by --uc-gate.",
     )
     parser.add_argument(
         "--preflight-only",
@@ -634,8 +595,7 @@ def main() -> int:
         type=int,
         default=-1,
         help=(
-            "Pass uc_oneway --hold-before-destroy-ms; -1 selects 1000 ms for "
-            "Apple rdma_* devices and 0 otherwise."
+            "Pass uc_oneway --hold-before-destroy-ms; -1 selects 0."
         ),
     )
     parser.add_argument("--base-port", type=int, default=24000)
@@ -649,7 +609,7 @@ def main() -> int:
     SSH_CONFIG = args.ssh_config or ""
     SSH_OPTIONS = list(args.ssh_option or [])
 
-    if args.apple_gate:
+    if args.uc_gate:
         args.directions = "both"
         args.sizes = [4096, 65536]
         args.send_depths = [256]
@@ -659,7 +619,6 @@ def main() -> int:
         args.mtus = [4096]
         args.count = 256
         args.repeats = 1
-        args.apple_queue_depth = 256
         args.timeout = max(args.timeout, 120.0)
         args.receiver_drain_timeout = max(args.receiver_drain_timeout, 30.0)
         args.start_delay = max(args.start_delay, 2.0)
@@ -668,16 +627,16 @@ def main() -> int:
         args.check = True
         args.check_any_order = False
         if not args.tag:
-            args.tag = "apple-gate"
+            args.tag = "uc-gate"
         print(
-            "tbv-uc-stress: apple gate preset active "
+            "tbv-uc-stress: uc gate preset active "
             "(both directions, sizes=4096,65536, depth=256, count=256, "
             "strict-order)",
             flush=True,
         )
 
     if args.preflight is None:
-        args.preflight = args.apple_gate
+        args.preflight = args.uc_gate
     if args.preflight_only:
         args.preflight = True
 
@@ -691,8 +650,6 @@ def main() -> int:
         die("--send-depths must be positive")
     if args.send_slots < 0:
         die("--send-slots must be non-negative")
-    if args.apple_queue_depth < 0:
-        die("--apple-queue-depth must be non-negative")
     if args.hold_before_destroy_ms < -1:
         die("--hold-before-destroy-ms must be -1 or non-negative")
 
@@ -770,18 +727,8 @@ def main() -> int:
                         for repeat in range(1, args.repeats + 1):
                             run_index += 1
                             port = args.base_port + run_index
-                            effective_send_depth = apple_queue_depth(
-                                send_depth,
-                                receiver_dev,
-                                sender_dev,
-                                args.apple_queue_depth,
-                            )
-                            effective_recv_posts = apple_queue_depth(
-                                args.recv_posts,
-                                receiver_dev,
-                                sender_dev,
-                                args.apple_queue_depth,
-                            )
+                            effective_send_depth = send_depth
+                            effective_recv_posts = args.recv_posts
                             print(
                                 "tbv-uc-stress: "
                                 f"{direction} size={size} "

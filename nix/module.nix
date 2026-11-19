@@ -9,11 +9,11 @@
 let
   root = source;
   rootPrefix = "${toString root}/";
-  sourceEntries = [ "Makefile" "kernel" "proto" ];
+  sourceEntries = [ "Makefile" "dkms.conf" "kernel" "proto" ];
 in
 stdenv.mkDerivation {
   pname = "thunderbolt-ibverbs";
-  version = "0.4.0";
+  version = import ./version.nix;
 
   src = lib.cleanSourceWith {
     src = root;

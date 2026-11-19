@@ -2,16 +2,16 @@
 /*
  * uc_oneway - minimal UC SEND benchmark/probe.
  *
- * This is for Apple RDMA-over-Thunderbolt interop debugging. TCP is used only
- * to exchange QP metadata; data flows as UC IBV_WR_SEND messages.
+ * TCP is used only to exchange QP metadata; data flows as UC IBV_WR_SEND
+ * messages.
  *
  * Example:
- *   # Mac receiver, connecting outbound to avoid macOS inbound firewall prompts
- *   ./uc_oneway --role recv --dev rdma_en1 --gid-index 1 \
+ *   # Receiver, connecting outbound
+ *   ./uc_oneway --role recv --dev usb4_rdma0 --gid-index 1 \
  *       --connect 192.168.1.11 --port 18515 \
  *       --size 4096 --count 2048 --depth 512
  *
- *   # Linux sender, listening for the TCP metadata connection
+ *   # Sender, listening for the TCP metadata connection
  *   ./uc_oneway --role send --dev usb4_rdma0 --gid-index 1 \
  *       --port 18515 --size 4096 --count 2048 --depth 64
  *
@@ -19,19 +19,15 @@
  * number of messages expected:
  *   ./uc_oneway --role recv ... --count 64 --depth 512 --recv-posts 512
  *
- * Same-QP bidirectional probe, matching the traffic shape that JACCL allreduce
- * uses on the Apple-compatible path:
- *   ./uc_oneway --role bidi --dev rdma_en1 --gid-index 1 --port 18515 \
+ * Same-QP bidirectional probe:
+ *   ./uc_oneway --role bidi --dev usb4_rdma0 --gid-index 1 --port 18515 \
  *       --size 16384 --count 64 --depth 2 --recv-posts 2 --check
- *   ./uc_oneway --role bidi --dev usb4_apple0 --gid-index 1 \
+ *   ./uc_oneway --role bidi --dev usb4_rdma0 --gid-index 1 \
  *       --connect 192.168.1.20 --port 18515 \
  *       --size 16384 --count 64 --depth 2 --recv-posts 2 --check
  */
 
 #include <arpa/inet.h>
-#ifdef __APPLE__
-#include <dlfcn.h>
-#endif
 #include <errno.h>
 #include <infiniband/verbs.h>
 #include <netdb.h>
@@ -201,20 +197,6 @@ static int parse_size(const char *s, size_t *out)
 	if (errno || !end || *end || v == 0)
 		return -1;
 	*out = (size_t)v;
-	return 0;
-}
-
-static int load_verbs_provider(void)
-{
-#ifdef __APPLE__
-	void *handle;
-
-	handle = dlopen("librdma.dylib", RTLD_NOW | RTLD_GLOBAL);
-	if (!handle) {
-		fprintf(stderr, "failed to load librdma.dylib: %s\n", dlerror());
-		return -1;
-	}
-#endif
 	return 0;
 }
 
@@ -431,16 +413,14 @@ static int exchange_info(int fd, const struct peer_info *local,
 static int qp_to_init(struct ibv_qp *qp, int port)
 {
 	struct ibv_qp_attr a;
-	int tn3205 = getenv("UC_ONEWAY_TN3205") != NULL;
 	int ret;
 
 	memset(&a, 0, sizeof(a));
 	a.qp_state = IBV_QPS_INIT;
 	a.pkey_index = 0;
 	a.port_num = (uint8_t)port;
-	a.qp_access_flags = tn3205 ? 0 :
-			    (IBV_ACCESS_LOCAL_WRITE |
-			     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
+	a.qp_access_flags = IBV_ACCESS_LOCAL_WRITE |
+			    IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
 	errno = 0;
 	ret = ibv_modify_qp(qp, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX |
 			    IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
@@ -460,7 +440,6 @@ static int qp_to_rts(struct ibv_qp *qp, int port, int sgid_index,
 		     uint32_t remote_psn, enum ibv_mtu path_mtu)
 {
 	struct ibv_qp_attr a;
-	int tn3205 = getenv("UC_ONEWAY_TN3205") != NULL;
 	int ret;
 
 	memset(&a, 0, sizeof(a));
@@ -474,8 +453,8 @@ static int qp_to_rts(struct ibv_qp *qp, int port, int sgid_index,
 	a.ah_attr.port_num = (uint8_t)port;
 	/* Match JACCL: only enable global routing when the dgid has a non-zero
 	 * interface_id (i.e. it's a real GID, not the zero default). */
-	a.ah_attr.is_global = tn3205 ? 1 : 0;
-	if (tn3205 || dgid->global.interface_id) {
+	a.ah_attr.is_global = 0;
+	if (dgid->global.interface_id) {
 		a.ah_attr.is_global = 1;
 		a.ah_attr.grh.dgid = *dgid;
 		a.ah_attr.grh.sgid_index = sgid_index;
@@ -683,8 +662,6 @@ int main(int argc, char **argv)
 		usage(argv[0]);
 		return 2;
 	}
-	if (load_verbs_provider())
-		return 1;
 	is_sender = !strcmp(o.role, "send");
 	is_bidi = !strcmp(o.role, "bidi");
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -760,10 +737,8 @@ int main(int argc, char **argv)
 	send_buf = buf;
 	recv_buf = is_bidi ? buf + send_region_size : buf;
 	debug_step("register mr");
-	int mr_access = getenv("UC_ONEWAY_TN3205") ?
-			IBV_ACCESS_LOCAL_WRITE :
-			(IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
-			 IBV_ACCESS_REMOTE_WRITE);
+	int mr_access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
+			IBV_ACCESS_REMOTE_WRITE;
 	fprintf(stderr, "register mr len=%zu access=0x%x\n", bufsz,
 		mr_access);
 	mr = ibv_reg_mr(pd, buf, bufsz, mr_access);

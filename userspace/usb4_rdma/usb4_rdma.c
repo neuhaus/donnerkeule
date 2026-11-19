@@ -19,7 +19,6 @@
 #include "usb4_rdma.h"
 
 #define USB4_RDMA_NODE_GUID  0x0200544256524253ULL
-#define USB4_APPLE_NODE_GUID 0x0200544256524254ULL
 
 static void usb4_rdma_free_context(struct ibv_context *ibv_ctx);
 
@@ -344,15 +343,13 @@ static void usb4_rdma_device_free(struct verbs_device *base_dev)
 
 static const struct verbs_match_ent usb4_rdma_match_table[] = {
 	VERBS_NAME_MATCH("usb4_rdma", NULL),
-	VERBS_NAME_MATCH("usb4_apple", NULL),
 	{},
 };
 
 static bool usb4_rdma_match_device(struct verbs_sysfs_dev *sysfs)
 {
 	return sysfs->match ||
-	       sysfs->node_guid == USB4_RDMA_NODE_GUID ||
-	       sysfs->node_guid == USB4_APPLE_NODE_GUID;
+	       sysfs->node_guid == USB4_RDMA_NODE_GUID;
 }
 
 static const struct verbs_device_ops usb4_rdma_dev_ops = {

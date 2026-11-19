@@ -2,7 +2,7 @@
 
 **Umgesetzt:** Die sechs Schritte aus der empfohlenen Reihenfolge sind
 abgearbeitet und im Container auf fuzzy mit Nix geprüft. Der
-[Umsetzungsbericht](/Users/user/Documents/thunderbolt-ibverbs/docs/REFACTOR_IMPLEMENTATION_2026-10-07.md)
+[Umsetzungsbericht](REFACTOR_IMPLEMENTATION_2026-10-07.md)
 beschreibt Änderungen und Validierung. Die folgenden Befunde dokumentieren den
 Arbeitsbaum vor dieser Umsetzung; die damaligen Hinweise auf noch ausstehende
 Löschungen und Builds gehören zu diesem ursprünglichen Prüfstand.

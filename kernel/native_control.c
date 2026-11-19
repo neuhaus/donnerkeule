@@ -27,10 +27,7 @@ static u32 tbv_native_control_caps(const struct tbv_state *state,
 {
 	u32 caps = 0;
 
-	if (state->cfg.uc_supported)
-		caps |= TBV_NATIVE_WIRE_CAP_UC;
-	if (state->cfg.rc_supported)
-		caps |= TBV_NATIVE_WIRE_CAP_RC;
+	caps |= TBV_NATIVE_WIRE_CAP_UC | TBV_NATIVE_WIRE_CAP_RC;
 	if (peer->nr_rails > 1)
 		caps |= TBV_NATIVE_WIRE_CAP_MULTI_RAIL;
 	if (tbv_dmabuf_verbs_enabled())
@@ -98,8 +95,7 @@ tbv_native_control_find_source(struct tbv_state *state,
 
 	mutex_lock(&state->lock);
 	list_for_each_entry(peer, &state->peers, node) {
-		if (peer->backend != TBV_BACKEND_NATIVE ||
-		    !peer->xd->remote_uuid)
+		if (!peer->xd->remote_uuid)
 			continue;
 		if (memcmp(peer->xd->remote_uuid, remote->src_domain,
 			   sizeof(remote->src_domain)))
@@ -136,8 +132,6 @@ static int tbv_native_control_kick_matching_rail(
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 
-		if (peer->backend != TBV_BACKEND_NATIVE)
-			continue;
 		if (!tbv_native_control_peer_matches_source(peer, source_xd))
 			continue;
 
@@ -219,8 +213,6 @@ static int tbv_native_control_snapshot(struct tbv_state *state,
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 
-		if (peer->backend != TBV_BACKEND_NATIVE)
-			continue;
 		if (!tbv_native_control_peer_matches_source(peer, source_xd))
 			continue;
 
@@ -265,8 +257,6 @@ static int tbv_native_control_apply_remote(struct tbv_state *state,
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 
-		if (peer->backend != TBV_BACKEND_NATIVE)
-			continue;
 		if (!tbv_native_control_peer_matches_source(peer, source_xd))
 			continue;
 		/* A descriptor session cannot accept a restarted remote kernel on
@@ -339,8 +329,6 @@ static int tbv_native_control_mark_remote_ready(struct tbv_state *state,
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 
-		if (peer->backend != TBV_BACKEND_NATIVE)
-			continue;
 		if (!tbv_native_control_peer_matches_source(peer, source_xd))
 			continue;
 		if (tbv_dmabuf_verbs_enabled() &&
@@ -391,8 +379,6 @@ static int tbv_native_control_mark_local_ready_sent(
 	list_for_each_entry(peer, &state->peers, node) {
 		struct tbv_rail *rail;
 
-		if (peer->backend != TBV_BACKEND_NATIVE)
-			continue;
 		if (!tbv_native_control_peer_matches_source(peer, source_xd))
 			continue;
 
@@ -595,9 +581,6 @@ static int tbv_native_control_exchange_once(struct tbv_state *state,
 	struct tbv_native_wire_info info;
 	int ret;
 
-	if (peer->backend != TBV_BACKEND_NATIVE)
-		return 0;
-
 	if (rail->path.state != TBV_PATH_RING_STARTED)
 		return -EINVAL;
 
@@ -657,9 +640,6 @@ static int tbv_native_control_ready_once(struct tbv_state *state,
 	u8 request[TBV_NATIVE_WIRE_HELLO_MSG_SIZE];
 	struct tbv_native_wire_info info;
 	int ret;
-
-	if (peer->backend != TBV_BACKEND_NATIVE)
-		return 0;
 
 	if (rail->path.state != TBV_PATH_TUNNEL_ENABLED)
 		return -EINVAL;
@@ -735,9 +715,6 @@ static void tbv_native_control_work(struct work_struct *work)
 	int ret = 0;
 
 	if (!state || !peer || READ_ONCE(rail->native_work_stop))
-		return;
-
-	if (peer->backend != TBV_BACKEND_NATIVE)
 		return;
 
 	if (rail->path.state != TBV_PATH_RING_STARTED &&
@@ -881,9 +858,6 @@ int tbv_native_control_start(struct tbv_state *state)
 {
 	int ret;
 
-	if (!state->cfg.native_enabled)
-		return 0;
-
 #ifdef TB_PROTOCOL_HANDLER_HAS_XDOMAIN
 	state->native_control_source_aware = true;
 	ret = tbv_native_control_xdomain_start(state);
@@ -914,8 +888,7 @@ void tbv_native_control_stop(struct tbv_state *state)
 
 const char *tbv_native_control_mode_name(const struct tbv_state *state)
 {
-	if (!state || !state->cfg.native_enabled ||
-	    !state->native_control_registered)
+	if (!state || !state->native_control_registered)
 		return "off";
 
 	return state->native_control_source_aware ? "source_aware" : "legacy";

@@ -14,6 +14,72 @@ struct tbv_state;
 struct tbv_dmabuf_mr;
 struct seq_file;
 
+/*
+ * Locking
+ *
+ * Order, outermost first. "A > B" means A is held while B is taken, at a
+ * call site that was read at both ends. Take them in this order and release
+ * them in the reverse.
+ *
+ *   ctrl->setup_lock > peer->dmabuf_control_lock > peer->control_lock
+ *   peer->control_lock       > state->lock
+ *   state->rail_register_lock > state->lock
+ *   dmabuf_engine.rx_lock    > state->lock
+ *   dmabuf_engine.rx_lock    > dmabuf_engine.ring_lock
+ *   state->lock              > path->tx_lock
+ *   state->lock              > dmabuf_engine.ring_lock   (trylock only)
+ *   state->lock              > tqp->lock
+ *   tqp->rx_lock             > tqp->lock
+ *   tqp->ack_lock            > tqp->lock, send->lock, cq->lock
+ *   read->data_lock          > tqp->lock
+ *
+ * Inferred from call chains but not confirmed at both ends, so do not rely
+ * on these without re-reading them:
+ *
+ *   dmabuf_engine.rx_lock    > tqp->rx_lock > tqp->lock
+ *   tqp->rx_lock             > cq->lock, path->tx_lock
+ *   tqp->post_lock           > tqp->lock, state->lock, path->tx_lock
+ *
+ * What each one covers:
+ *
+ * state->lock       peers, rails, links, gsi_qp and path selection.
+ *                   tbv_path_get_gsi_qp() takes tqp->lock under it; the
+ *                   reverse order was not found.
+ * rail_register_lock ib_device register and unregister, deliberately kept
+ *                   outside state->lock so sleeping registration cannot
+ *                   invert against verbs operations.
+ * tqp->lock         (spin, irqsave) QP lists, attributes, state and
+ *                   timeouts. A leaf: no other lock is taken while it is
+ *                   held.
+ * dmabuf_engine.ring_lock
+ *                   Rail ring stop and progress. Taken only by trylock
+ *                   under state->lock, but with a blocking mutex_lock()
+ *                   under dmabuf_engine.rx_lock, through
+ *                   tbv_dmabuf_stop_rail() on a credit mismatch.
+ * tqp->rx_lock      RX reassembly, reorder table, ack history, RNR state.
+ *                   Dropped on purpose while a BLOCK_WRITE fragment is
+ *                   placed.
+ * tqp->ack_lock     SEND_ACK ordering. tqp->post_lock serialises post_send.
+ *                   Both are only taken when DMA-BUF verbs are enabled.
+ * read->data_lock   RDMA READ response fragment data.
+ * path->tx_lock     TX queues, credits and reservations.
+ * send->lock, cq->lock, verbs_qps_xa, verbs_mrs_xa, mr->host_dma_lock
+ *                   Leaves.
+ *
+ * No nesting was observed for path->build_lock, dmabuf_engine.tx_lock,
+ * cache_lock, submit_lock, credit_lock or progress_lock. That is an absence
+ * of evidence, not a guarantee that they are leaves.
+ *
+ * _locked functions whose callers hold one identifiable lock assert it with
+ * lockdep_assert_held(); a kernel built with CONFIG_PROVE_LOCKING checks
+ * those assertions and this order at run time.
+ *
+ * The module has exactly one struct tbv_state. That is what makes an
+ * assertion on &dev->state->lock, &peer->state->lock or &tqp->owner->lock
+ * name the lock the caller holds, even where the caller locked it through a
+ * different pointer.
+ */
+
 #define TBV_IBDEV_MAX_CQE 4096
 
 /* Private layouts shared by object allocation and the data path. CQ entries
@@ -70,7 +136,6 @@ int tbv_host_dma_address(struct tbv_mr *mr, struct tbv_host_dma_map *map,
 			 u64 offset, u32 bytes, dma_addr_t *address);
 
 struct tbv_state *tbv_ibdev_state(struct ib_device *ibdev);
-enum tbv_backend_type tbv_ibdev_backend(struct ib_device *ibdev);
 void tbv_ibdev_cq_overflow(struct ib_qp *qp);
 
 struct tbv_mr *tbv_mr_get(struct tbv_state *state, u32 key);

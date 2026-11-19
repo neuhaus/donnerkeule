@@ -1,30 +1,19 @@
 { lib
 , stdenv
 , pkg-config
-, apple-sdk_26 ? null
 , rdma-core-usb4 ? null
 , python3
 , source ? ../userspace/bench
-, appleCompat ? ./apple-compat
 }:
 
 let
-  isDarwin = stdenv.hostPlatform.isDarwin;
-
-  # Programs portable to Apple's RDMA host SDK (linked via dynamic_lookup):
-  # plain libibverbs verbs surface, no Linux-specific kernel uapi or
-  # LD_PRELOAD-style entrypoints.
-  darwinPrograms = [
-    "mac_tb_rdma_probe"
+  # ibv_trace is an LD_PRELOAD tracer built as .so.
+  cPrograms = [
     "rc_write_poll"
     "rc_write_verify"
     "u4_pingpong"
     "uc_oneway"
     "uc_write_verify"
-  ];
-
-  # Full Linux set. ibv_trace is an LD_PRELOAD tracer built as .so.
-  linuxPrograms = darwinPrograms ++ [
     "rc_qpn_churn"
     "rc_write_imm_verify"
     "rdma_gid_probe"
@@ -36,17 +25,10 @@ let
     "tbv_uc_stress.py"
     "tbv_vllm_smoke.sh"
   ];
-
-  cPrograms = if isDarwin then darwinPrograms else linuxPrograms;
 in
-assert lib.assertMsg (!isDarwin || apple-sdk_26 != null)
-  "bench-tools Darwin build requires apple-sdk_26";
 stdenv.mkDerivation {
-  pname =
-    if isDarwin
-    then "thunderbolt-ibverbs-bench-tools-apple-rdma"
-    else "thunderbolt-ibverbs-bench-tools";
-  version = "0.4.0";
+  pname = "thunderbolt-ibverbs-bench-tools";
+  version = import ./version.nix;
 
   src = lib.cleanSourceWith {
     src = source;
@@ -60,48 +42,30 @@ stdenv.mkDerivation {
         || lib.hasSuffix ".sh" rel;
   };
 
-  nativeBuildInputs = lib.optionals (!isDarwin) [ pkg-config ];
-  buildInputs = lib.optionals (!isDarwin) [ rdma-core-usb4 ]
-    ++ lib.optionals isDarwin [ apple-sdk_26 ]
-    ++ [ python3 ];
+  nativeBuildInputs = [ pkg-config ];
+  buildInputs = [ rdma-core-usb4 python3 ];
 
   dontConfigure = true;
 
-  buildPhase =
-    if isDarwin then ''
-      runHook preBuild
-      for name in ${lib.concatStringsSep " " cPrograms}; do
-        $CC -O2 -Wall -Wextra -std=gnu11 \
-          -I${appleCompat} \
-          "$name.c" \
-          -lrdma \
-          -o "$name"
-      done
-      runHook postBuild
-    '' else ''
-      runHook preBuild
-      for name in ${lib.concatStringsSep " " cPrograms}; do
-        extra=""
-        case "$name" in
-          uc_oneway) extra="-ldl" ;;
-        esac
-        $CC -O2 -Wall -Wextra -std=gnu11 \
-          -I${rdma-core-usb4.dev}/include \
-          "$name.c" \
-          -L${rdma-core-usb4}/lib -libverbs \
-          $extra \
-          -Wl,-rpath,${rdma-core-usb4}/lib \
-          -o "$name"
-      done
-      $CC -O2 -Wall -Wextra -fPIC -shared \
+  buildPhase = ''
+    runHook preBuild
+    for name in ${lib.concatStringsSep " " cPrograms}; do
+      $CC -O2 -Wall -Wextra -std=gnu11 \
         -I${rdma-core-usb4.dev}/include \
-        ibv_trace.c \
-        -ldl -lpthread \
+        "$name.c" \
         -L${rdma-core-usb4}/lib -libverbs \
         -Wl,-rpath,${rdma-core-usb4}/lib \
-        -o libibv_trace.so
-      runHook postBuild
-    '';
+        -o "$name"
+    done
+    $CC -O2 -Wall -Wextra -fPIC -shared \
+      -I${rdma-core-usb4.dev}/include \
+      ibv_trace.c \
+      -ldl -lpthread \
+      -L${rdma-core-usb4}/lib -libverbs \
+      -Wl,-rpath,${rdma-core-usb4}/lib \
+      -o libibv_trace.so
+    runHook postBuild
+  '';
 
   installPhase = ''
     runHook preInstall
@@ -109,10 +73,8 @@ stdenv.mkDerivation {
     install -m 0755 ${lib.concatStringsSep " " cPrograms} $out/bin/
     install -m 0755 ${lib.concatStringsSep " " scripts} $out/bin/
     install -m 0644 tbv_bench.py $out/bin/
-    ${lib.optionalString (!isDarwin) ''
-      mkdir -p $out/lib
-      install -m 0644 libibv_trace.so $out/lib/
-    ''}
+    mkdir -p $out/lib
+    install -m 0644 libibv_trace.so $out/lib/
     runHook postInstall
   '';
 
@@ -124,6 +86,6 @@ stdenv.mkDerivation {
     description = "Thunderbolt/USB4 RDMA bench programs (libibverbs C tools + perftest helper scripts)";
     license = licenses.mit;
     maintainers = with maintainers; [ georgewhewell ];
-    platforms = if isDarwin then platforms.darwin else platforms.linux;
+    platforms = platforms.linux;
   };
 }

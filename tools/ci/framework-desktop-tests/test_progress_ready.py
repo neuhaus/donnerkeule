@@ -24,6 +24,7 @@ typedef uint32_t u32;
 #define le32_to_cpu(x) (x)
 #define RING_DESC_COMPLETED 2
 #define PCI_VENDOR_ID_AMD 0x1022
+#define TBV_BULK_NHI_ABI 1
 struct list_head {int nonempty;};
 static bool list_empty(struct list_head *p){return !p->nonempty;}
 struct pci_dev {unsigned vendor,device;bool pci;};

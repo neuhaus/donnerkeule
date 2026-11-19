@@ -1,0 +1,4 @@
+# Measurement archives are reviewable in git but do not belong in release
+# tarballs. export-ignore only affects git archive (release tarballs made from
+# git); DKMS and distro packaging copy an explicit list of directories.
+bench/results export-ignore

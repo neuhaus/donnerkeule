@@ -84,15 +84,15 @@ module_param(dmabuf_post_burst, uint, 0444);
 MODULE_PARM_DESC(dmabuf_post_burst, "Frames posted per rail turn, 1..512; default 16");
 static atomic64_t dmabuf_bulk_calls, dmabuf_bulk_frames, dmabuf_bulk_fallback;
 static atomic64_t dmabuf_progress_ticks, dmabuf_progress_skipped;
-static bool dmabuf_coalesce_copy;
+static bool dmabuf_coalesce_copy = true;
 module_param(dmabuf_coalesce_copy, bool, 0444);
 MODULE_PARM_DESC(dmabuf_coalesce_copy,
-	"Copy each host-staged TX lane once instead of once per 4 KiB frame");
+	"Copy each host-staged TX lane once instead of once per 4 KiB frame (default: 1)");
 static atomic64_t dmabuf_copy_chunks, dmabuf_copy_bytes;
-static bool dmabuf_reuse_buffers;
+static bool dmabuf_reuse_buffers = true;
 module_param(dmabuf_reuse_buffers, bool, 0444);
 MODULE_PARM_DESC(dmabuf_reuse_buffers,
-	"Cache one drained descriptor/staging batch per rail and direction (opt-in)");
+	"Cache one drained descriptor/staging batch per rail and direction (default: 1)");
 static atomic64_t dmabuf_cache_hits, dmabuf_cache_misses, dmabuf_cache_bytes;
 static atomic64_t dmabuf_cancel_unposted, dmabuf_cancel_drained, dmabuf_cancel_stopped;
 static atomic64_t dmabuf_cancel_rx_drained, dmabuf_cancel_rx_stopped;
@@ -106,10 +106,10 @@ static bool dmabuf_parallel_post = true;
 module_param(dmabuf_parallel_post, bool, 0444);
 MODULE_PARM_DESC(dmabuf_parallel_post, "Post large descriptor batches concurrently on distinct NHIs");
 
-static bool dmabuf_credits;
+static bool dmabuf_credits = true;
 module_param(dmabuf_credits, bool, 0444);
 MODULE_PARM_DESC(dmabuf_credits,
-	"Pre-arm the next GPU SEND receive WQE so the peer can skip PREPARE; requires dmabuf_push_done=1 and dmabuf_control_ring=0");
+	"Pre-arm the next SEND receive WQE so the peer can skip PREPARE; requires dmabuf_push_done=1 and dmabuf_control_ring=0 (default: 1)");
 
 static bool dmabuf_direct_post = true;
 module_param(dmabuf_direct_post, bool, 0444);
@@ -3095,8 +3095,18 @@ int tbv_dmabuf_start(struct tbv_state *state)
 		pr_warn_once("dmabuf_batch_doorbell on unqualified kernel %s (qualified: 7.2.6, 7.2.11, 7.3.3)\n",
 			     init_utsname()->release);
 #endif
-	if (dmabuf_poll_us && (dmabuf_poll_us < 10 || dmabuf_poll_us > 10000))
+	if (dmabuf_poll_us && (dmabuf_poll_us < 10 || dmabuf_poll_us > 10000)) {
+		pr_err("dmabuf_poll_us=%u out of range (10..10000)\n", dmabuf_poll_us);
 		return -EINVAL;
+	}
+	if (dmabuf_poll_control && !dmabuf_poll_us) {
+		pr_err("dmabuf_poll_control=1 requires dmabuf_poll_us>0\n");
+		return -EINVAL;
+	}
+	if (dmabuf_credits && (!tbv_control_push_enabled() || tbv_control_enabled())) {
+		pr_err("dmabuf_credits=1 requires dmabuf_push_done=1 and dmabuf_control_ring=0\n");
+		return -EINVAL;
+	}
 	/* Descriptor draining depends on Thunderbolt's ordinary ring workers;
 	 * neither this queue nor the verbs error queue is a reclaim worker. */
 	dmabuf_engine.tx_wq = alloc_ordered_workqueue("tbv_dmabuf_tx", 0);

@@ -12,7 +12,7 @@ class HostDirectTests(unittest.TestCase):
     def test_alignment_bounds_device_maps_and_failure_cleanup(self):
         here = Path(__file__).resolve().parent
         source = source_file('kernel/verbs_mr.c')
-        first = source.index('bool tbv_host_dma_eligible(' , source.index('static bool dmabuf_host_direct;'))
+        first = source.index('bool tbv_host_dma_eligible(', source.index('static bool dmabuf_host_direct'))
         last = source.index('struct tbv_mr *tbv_mr_get(', first)
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

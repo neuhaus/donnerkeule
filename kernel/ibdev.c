@@ -80,10 +80,10 @@ module_param(roce_netdev, charp, 0444);
 MODULE_PARM_DESC(roce_netdev,
 		 "Netdev used for RoCE GID metadata, for example br0.lan");
 
-static bool dmabuf_host_credits;
+static bool dmabuf_host_credits = true;
 module_param(dmabuf_host_credits, bool, 0444);
 MODULE_PARM_DESC(dmabuf_host_credits,
-                 "Pre-arm SEND credits for eligible aligned host MRs (default off)");
+                 "Pre-arm SEND credits for eligible aligned host MRs (default: 1)");
 
 const char *tbv_ibdev_roce_netdev_name(void)
 {

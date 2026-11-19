@@ -32,10 +32,10 @@ module_param(dmabuf_control_ring, bool, 0444);
 MODULE_PARM_DESC(dmabuf_control_ring,
 	"Use separate NHI rings for descriptor verbs PREPARE/READY and pushed DONE when both peers support it");
 
-static bool dmabuf_push_done;
+static bool dmabuf_push_done = true;
 module_param(dmabuf_push_done, bool, 0444);
 MODULE_PARM_DESC(dmabuf_push_done,
-	"Push descriptor verbs DONE over XDomain without reserving data rings when both peers support it");
+	"Push descriptor verbs DONE over XDomain without reserving data rings when both peers support it (default: 1)");
 
 struct tbv_ctrl_frame {
 	struct ring_frame frame;

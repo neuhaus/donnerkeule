@@ -305,13 +305,11 @@ static inline int atomic_cmpxchg(int *p, int old, int next) { int value = *p; if
 #define WRITE_ONCE(value, next) ((value) = (next))
 #define pr_debug(...) ((void)0)
 static unsigned wakes, queued, firsts, lasts, batch_marks, clocks;
-static bool enabled, dmabuf_rx_eager = true;
+static bool enabled;
 static struct { int rx_complete_work; } dmabuf_engine;
 #define system_highpri_wq NULL
 #define wake_up_all(p) do { (void)(p); wakes++; } while (0)
 #define queue_work(wq, work) do { (void)(wq); (void)(work); queued++; } while (0)
-static bool tbv_control_enabled(void) { return false; }
-static bool tbv_control_push_enabled(void) { return false; }
 static u64 tbv_perf_clock(void) { if (!enabled) return 0; return ++clocks; }
 static void tbv_perf_mark(const struct tbv_perf_id *id, const char *phase, int status, u32 aux) {
     (void)id; (void)status; (void)aux; if (!enabled) return;

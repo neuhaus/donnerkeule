@@ -47,10 +47,6 @@ module_param(dmabuf_verbs, bool, 0444);
 MODULE_PARM_DESC(dmabuf_verbs,
 	"Native descriptor verbs with DMA-BUF MRs and USB4 control; requires register_verbs=1");
 
-static bool dmabuf_index = true;
-module_param(dmabuf_index, bool, 0444);
-MODULE_PARM_DESC(dmabuf_index, "Index DMA-BUF frame addresses once per NHI attachment");
-
 /* Optional bounded progress for NHIs whose completion IRQ can be missed.
  * Use the ordinary serialized ring worker; never consume descriptors here. */
 static uint dmabuf_poll_us;
@@ -99,23 +95,10 @@ static atomic64_t dmabuf_cancel_unposted, dmabuf_cancel_drained, dmabuf_cancel_s
 static atomic64_t dmabuf_cancel_rx_drained, dmabuf_cancel_rx_stopped;
 static atomic64_t dmabuf_host_tx_frames, dmabuf_host_rx_frames;
 
-static bool dmabuf_rx_eager = true;
-module_param(dmabuf_rx_eager, bool, 0444);
-MODULE_PARM_DESC(dmabuf_rx_eager, "Reap RX on the final DMA callback instead of waiting for STATUS");
-
-static bool dmabuf_parallel_post = true;
-module_param(dmabuf_parallel_post, bool, 0444);
-MODULE_PARM_DESC(dmabuf_parallel_post, "Post large descriptor batches concurrently on distinct NHIs");
-
 static bool dmabuf_credits = true;
 module_param(dmabuf_credits, bool, 0444);
 MODULE_PARM_DESC(dmabuf_credits,
 	"Pre-arm the next SEND receive WQE so the peer can skip PREPARE; requires dmabuf_push_done=1 and dmabuf_control_ring=0 (default: 1)");
-
-static bool dmabuf_direct_post = true;
-module_param(dmabuf_direct_post, bool, 0444);
-MODULE_PARM_DESC(dmabuf_direct_post,
-	"With credits, post an idle engine's credited SEND from ibv_post_send instead of the TX worker");
 
 static uint dmabuf_credit_max = SZ_1M;
 module_param(dmabuf_credit_max, uint, 0444);
@@ -145,7 +128,6 @@ void tbv_dmabuf_debugfs_show(struct seq_file *s)
 	u32 i;
 
 	seq_printf(s, "dmabuf_verbs: %u\n", dmabuf_verbs);
-	seq_printf(s, "dmabuf_index: %u\n", dmabuf_index);
 	seq_printf(s, "dmabuf_reuse_buffers: %u\n", dmabuf_reuse_buffers);
 	seq_printf(s, "dmabuf_cache_hits: %lld\n", atomic64_read(&dmabuf_cache_hits));
 	seq_printf(s, "dmabuf_cancel_unposted: %lld\n", atomic64_read(&dmabuf_cancel_unposted));
@@ -167,13 +149,10 @@ void tbv_dmabuf_debugfs_show(struct seq_file *s)
 	seq_printf(s, "dmabuf_bulk_fallback: %lld\n", atomic64_read(&dmabuf_bulk_fallback));
 	seq_printf(s, "dmabuf_progress_ticks: %lld\n", atomic64_read(&dmabuf_progress_ticks));
 	seq_printf(s, "dmabuf_progress_skipped: %lld\n", atomic64_read(&dmabuf_progress_skipped));
-	seq_printf(s, "dmabuf_rx_eager: %u\n", dmabuf_rx_eager);
-	seq_printf(s, "dmabuf_parallel_post: %u\n", dmabuf_parallel_post);
 	seq_printf(s, "dmabuf_control_ring: %u\n", tbv_control_enabled());
 	seq_printf(s, "dmabuf_push_done: %u\n", tbv_control_push_enabled());
 	seq_printf(s, "dmabuf_credits: %u\n", tbv_dmabuf_credits_enabled());
 	seq_printf(s, "dmabuf_credit_max: %u\n", dmabuf_credit_max);
-	seq_printf(s, "dmabuf_direct_post: %u\n", dmabuf_direct_post);
 	for (i = 0; i < CREDIT_COUNTERS; i++)
 		seq_printf(s, "dmabuf_credit_%s: %lld\n", dmabuf_credit_names[i],
 			   atomic64_read(&dmabuf_credit_counters[i]));
@@ -500,7 +479,6 @@ static int tbv_dmabuf_address(struct tbv_dmabuf_mr *mr, struct device *dev,
 			      u64 offset, u32 bytes, dma_addr_t *address)
 {
 	struct tbv_dmabuf_mapping *map = NULL;
-	struct scatterlist *sg;
 	u64 skip;
 	u64 perf_attach = 0;
 	u32 i;
@@ -543,18 +521,16 @@ static int tbv_dmabuf_address(struct tbv_dmabuf_mr *mr, struct device *dev,
 			goto out;
 		}
 		map->dev = get_device(dev);
-		if (dmabuf_index) {
-			ret = tbv_dmabuf_index_map(mr, map);
-			if (ret) {
-				kvfree(map->pages);
-				map->pages = NULL;
-				dma_buf_unmap_attachment_unlocked(map->attach, map->sgt,
-							 DMA_BIDIRECTIONAL);
-				dma_buf_detach(map->attach->dmabuf, map->attach);
-				put_device(map->dev);
-				memset(map, 0, sizeof(*map));
-				goto out;
-			}
+		ret = tbv_dmabuf_index_map(mr, map);
+		if (ret) {
+			kvfree(map->pages);
+			map->pages = NULL;
+			dma_buf_unmap_attachment_unlocked(map->attach, map->sgt,
+						 DMA_BIDIRECTIONAL);
+			dma_buf_detach(map->attach->dmabuf, map->attach);
+			put_device(map->dev);
+			memset(map, 0, sizeof(*map));
+			goto out;
 		}
 	}
 	if (map->pages) {
@@ -564,30 +540,13 @@ static int tbv_dmabuf_address(struct tbv_dmabuf_mr *mr, struct device *dev,
 			*address = page->address;
 			ret = 0;
 		}
-		goto out;
-	}
-	for_each_sgtable_dma_sg(map->sgt, sg, i) {
-		u64 a;
-
-		if (skip >= sg_dma_len(sg)) {
-			skip -= sg_dma_len(sg);
-			continue;
-		}
-		/* An NHI descriptor cannot cross an SG entry. */
-		if (bytes > sg_dma_len(sg) - skip ||
-		    check_add_overflow((u64)sg_dma_address(sg), skip, &a) ||
-		    a > ~(dma_addr_t)0 || bytes - 1 > ~(dma_addr_t)0 - a)
-			break;
-		*address = a;
-		ret = 0;
-		break;
 	}
 out:
 	mutex_unlock(&mr->lock);
 	if (perf_attach) {
 		struct tbv_perf_id id = { .bytes = mr->length };
 
-		tbv_perf_span(&id, "mr_attach_index", perf_attach, ret, dmabuf_index);
+		tbv_perf_span(&id, "mr_attach_index", perf_attach, ret, 1);
 	}
 	return ret;
 }
@@ -895,8 +854,7 @@ static void tbv_dmabuf_complete(struct tb_ring *ring, struct ring_frame *frame,
 		wake_up_all(&f->batch->wait);
 		/* Reaping may drain ring callbacks and take the RX mutex. Keep it
 		 * off this callback's ring worker; STATUS still confirms placement. */
-		if (!ring->is_tx && (dmabuf_rx_eager || tbv_control_enabled() ||
-				     tbv_control_push_enabled()))
+		if (!ring->is_tx)
 			queue_work(system_highpri_wq, &dmabuf_engine.rx_complete_work);
 	}
 }
@@ -1426,7 +1384,7 @@ static int tbv_dmabuf_batch_post(struct tbv_dmabuf_batch *batch, bool tx)
 			tbv_dmabuf_progress_start();
 		}
 	}
-	if (!dmabuf_parallel_post || groups < 2 || frames < 128) {
+	if (groups < 2 || frames < 128) {
 		for (i = 0; i < batch->count; i++) {
 			ret = tbv_dmabuf_lane_post(&batch->lanes[i], tx, 0,
 						 batch->lanes[i].count);
@@ -3036,7 +2994,7 @@ int tbv_dmabuf_submit(struct tbv_state *state, struct tbv_rail *rail,
 	refcount_inc(&rail->refcnt);
 	/* Queueing under the lock keeps a later WR behind one posted here. */
 	mutex_lock(&dmabuf_engine.submit_lock);
-	if (atomic_inc_return(&dmabuf_engine.tx_jobs) == 1 && dmabuf_direct_post)
+	if (atomic_inc_return(&dmabuf_engine.tx_jobs) == 1)
 		tbv_dmabuf_tx_direct(job);
 	queue_work(dmabuf_engine.tx_wq, &job->work);
 	mutex_unlock(&dmabuf_engine.submit_lock);

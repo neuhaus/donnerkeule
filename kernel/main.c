@@ -31,6 +31,11 @@ static char *lanes = "auto";
 module_param(lanes, charp, 0444);
 MODULE_PARM_DESC(lanes, "Lane request: auto, N, or MIN-MAX");
 
+static char *bringup = "auto";
+module_param(bringup, charp, 0444);
+MODULE_PARM_DESC(bringup,
+		 "Bring-up preset: auto (full when dmabuf_verbs=1), full, or off");
+
 static bool bind_services;
 module_param(bind_services, bool, 0444);
 MODULE_PARM_DESC(bind_services,
@@ -108,6 +113,21 @@ static int __init tbv_init(void)
 			tbnet_identity);
 
 	tbv_path_init_optional_symbols();
+	if (!bringup || (strcmp(bringup, "auto") && strcmp(bringup, "full") &&
+			 strcmp(bringup, "off"))) {
+		pr_err("invalid bringup='%s' (expected auto, full, or off)\n",
+		       bringup ?: "");
+		ret = -EINVAL;
+		goto err_path_symbols;
+	}
+	if (!strcmp(bringup, "full") ||
+	    (!strcmp(bringup, "auto") && tbv_dmabuf_verbs_enabled())) {
+		bind_services = true;
+		allocate_rings = true;
+		start_rings = true;
+		negotiate_native = true;
+		enable_tunnels = true;
+	}
 	if (tbv_dmabuf_verbs_enabled() &&
 	    (!register_verbs || !bind_services || !allocate_rings || !start_rings ||
 	     !negotiate_native || !enable_tunnels || !native_data)) {

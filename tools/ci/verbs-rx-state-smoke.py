@@ -129,9 +129,6 @@ static void tbv_dmabuf_spec_drop(bool abort);
 static bool tbv_dmabuf_spec_poll(void);
 static bool tbv_dmabuf_rx_cached(const struct tbv_dmabuf_wire *m);
 static int tbv_dmabuf_spec_prepare(struct tbv_state *state, struct tbv_dmabuf_wire *m);
-static u64 tbv_dmabuf_clock(void) { return 0; }
-enum { TBV_DMABUF_RX_BUILD, TBV_DMABUF_RX_POST };
-static void tbv_dmabuf_record(int stage, u64 start) { (void)stage; (void)start; }
 static void tbv_control_get(struct tbv_control *ctrl) { ref_gets++; ctrl->refs++; }
 static void tbv_control_put(struct tbv_control *ctrl) { if (ctrl) { ref_puts++; ctrl->refs--; } }
 static void tbv_control_done(struct tbv_control *ctrl, const struct tbv_dmabuf_wire *m, int status) {

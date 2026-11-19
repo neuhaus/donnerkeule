@@ -57,7 +57,6 @@ load)
         extra=(dmabuf_verbs=1 register_verbs=1)
     fi
     index=${TBV_LAB_INDEX:-1}
-    profile=${TBV_LAB_PROFILE:-0}
     eager=${TBV_LAB_RX_EAGER:-1}
     parallel=${TBV_LAB_PARALLEL_POST:-1}
     control=${TBV_LAB_CONTROL_RING:-0}
@@ -65,14 +64,13 @@ load)
     credits=${TBV_LAB_CREDITS:-0}
     direct=${TBV_LAB_DIRECT_POST:-}
     [[ $index = 0 || $index = 1 ]]
-    [[ $profile = 0 || $profile = 1 ]]
     [[ $eager = 0 || $eager = 1 ]]
     [[ $parallel = 0 || $parallel = 1 ]]
     [[ $control = 0 || $control = 1 ]]
     [[ $push_done = 0 || $push_done = 1 ]]
     [[ $credits = 0 || $credits = 1 ]]
     [[ -z $direct || $direct = 0 || $direct = 1 ]]
-    extra+=(dmabuf_index="$index" dmabuf_profile="$profile" dmabuf_rx_eager="$eager"
+    extra+=(dmabuf_index="$index" dmabuf_rx_eager="$eager"
         dmabuf_parallel_post="$parallel" dmabuf_control_ring="$control"
         dmabuf_push_done="$push_done")
     # Older test modules lack the parameter; pass it only when requested.

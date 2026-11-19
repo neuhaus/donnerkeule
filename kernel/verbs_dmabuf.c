@@ -98,10 +98,6 @@ static atomic64_t dmabuf_cancel_unposted, dmabuf_cancel_drained, dmabuf_cancel_s
 static atomic64_t dmabuf_cancel_rx_drained, dmabuf_cancel_rx_stopped;
 static atomic64_t dmabuf_host_tx_frames, dmabuf_host_rx_frames;
 
-static bool dmabuf_profile;
-module_param(dmabuf_profile, bool, 0444);
-MODULE_PARM_DESC(dmabuf_profile, "Collect descriptor verbs phase timings in debugfs summary");
-
 static bool dmabuf_rx_eager = true;
 module_param(dmabuf_rx_eager, bool, 0444);
 MODULE_PARM_DESC(dmabuf_rx_eager, "Reap RX on the final DMA callback instead of waiting for STATUS");
@@ -143,70 +139,12 @@ static void tbv_dmabuf_credit_count(enum tbv_dmabuf_credit_counter counter)
 	atomic64_inc(&dmabuf_credit_counters[counter]);
 }
 
-enum tbv_dmabuf_phase {
-	TBV_DMABUF_QUEUE,
-	TBV_DMABUF_JOB,
-	TBV_DMABUF_TX_BUILD,
-	TBV_DMABUF_PREPARE_TIME,
-	TBV_DMABUF_TX_POST,
-	TBV_DMABUF_TX_WAIT,
-	TBV_DMABUF_STATUS_TIME,
-	TBV_DMABUF_TX_RELEASE,
-	TBV_DMABUF_TX_FINISH,
-	TBV_DMABUF_RX_BUILD,
-	TBV_DMABUF_RX_POST,
-	TBV_DMABUF_RX_REAP,
-	TBV_DMABUF_RX_RELEASE,
-	TBV_DMABUF_PREPARE_WAIT,
-	TBV_DMABUF_RNR_WAIT,
-	TBV_DMABUF_STATUS_WAIT,
-	TBV_DMABUF_DONE_WAIT,
-	TBV_DMABUF_PHASE_COUNT,
-};
-
-static const char * const dmabuf_phase_names[] = {
-	"queue", "job", "tx_build", "prepare", "tx_post", "tx_wait", "status",
-	"tx_release", "tx_finish", "rx_build", "rx_post", "rx_reap", "rx_release",
-	"prepare_wait", "rnr_wait", "status_wait", "done_wait",
-};
-
-static struct {
-	atomic64_t calls;
-	atomic64_t ns;
-	atomic64_t max_ns;
-} dmabuf_timings[TBV_DMABUF_PHASE_COUNT];
-
-static u64 tbv_dmabuf_clock(void)
-{
-	return dmabuf_profile ? ktime_get_ns() : 0;
-}
-
-static void tbv_dmabuf_record(enum tbv_dmabuf_phase phase, u64 start)
-{
-	u64 ns, old;
-
-	if (!start)
-		return;
-	ns = ktime_get_ns() - start;
-	atomic64_inc(&dmabuf_timings[phase].calls);
-	atomic64_add(ns, &dmabuf_timings[phase].ns);
-	old = atomic64_read(&dmabuf_timings[phase].max_ns);
-	while (old < ns) {
-		u64 previous = atomic64_cmpxchg(&dmabuf_timings[phase].max_ns, old, ns);
-
-		if (previous == old)
-			break;
-		old = previous;
-	}
-}
-
 void tbv_dmabuf_debugfs_show(struct seq_file *s)
 {
 	u32 i;
 
 	seq_printf(s, "dmabuf_verbs: %u\n", dmabuf_verbs);
 	seq_printf(s, "dmabuf_index: %u\n", dmabuf_index);
-	seq_printf(s, "dmabuf_profile: %u\n", dmabuf_profile);
 	seq_printf(s, "dmabuf_reuse_buffers: %u\n", dmabuf_reuse_buffers);
 	seq_printf(s, "dmabuf_cache_hits: %lld\n", atomic64_read(&dmabuf_cache_hits));
 	seq_printf(s, "dmabuf_cancel_unposted: %lld\n", atomic64_read(&dmabuf_cancel_unposted));
@@ -238,16 +176,6 @@ void tbv_dmabuf_debugfs_show(struct seq_file *s)
 	for (i = 0; i < CREDIT_COUNTERS; i++)
 		seq_printf(s, "dmabuf_credit_%s: %lld\n", dmabuf_credit_names[i],
 			   atomic64_read(&dmabuf_credit_counters[i]));
-	if (!dmabuf_profile)
-		return;
-	for (i = 0; i < TBV_DMABUF_PHASE_COUNT; i++) {
-		seq_printf(s, "dmabuf_%s_calls: %lld\n", dmabuf_phase_names[i],
-			   atomic64_read(&dmabuf_timings[i].calls));
-		seq_printf(s, "dmabuf_%s_ns: %lld\n", dmabuf_phase_names[i],
-			   atomic64_read(&dmabuf_timings[i].ns));
-		seq_printf(s, "dmabuf_%s_max_ns: %lld\n", dmabuf_phase_names[i],
-			   atomic64_read(&dmabuf_timings[i].max_ns));
-	}
 }
 
 struct tbv_dmabuf_page {
@@ -338,7 +266,6 @@ struct tbv_dmabuf_job {
 	u8 retries;
 	u8 rnr_retries;
 	unsigned long timeout;
-	u64 queued_ns;
 	u64 perf_queued_ns;
 	struct tbv_perf_id perf;
 	/* Frames point back at their batch, so it lives with the WR. */
@@ -807,10 +734,8 @@ int tbv_dmabuf_quiesce_rail(struct tbv_rail *rail)
 
 static void tbv_dmabuf_batch_drop(struct tbv_dmabuf_batch *batch, bool abort)
 {
-	u64 start = tbv_dmabuf_clock();
 	u64 perf_start = tbv_perf_clock();
 	struct tbv_perf_id perf = batch->perf;
-	bool tx = batch->tx;
 	u32 i;
 
 	for (i = 0; i < batch->count; i++) {
@@ -844,7 +769,6 @@ static void tbv_dmabuf_batch_drop(struct tbv_dmabuf_batch *batch, bool abort)
 	if (dmabuf_poll_us && batch->submitted)
 		atomic_dec(&dmabuf_engine.progress_batches);
 	memset(batch, 0, sizeof(*batch));
-	tbv_dmabuf_record(tx ? TBV_DMABUF_TX_RELEASE : TBV_DMABUF_RX_RELEASE, start);
 	tbv_perf_span(&perf, "batch_release", perf_start, abort ? -ECANCELED : 0, 0);
 }
 
@@ -1714,11 +1638,9 @@ fail:
 
 static int tbv_dmabuf_rx_reap(void)
 {
-	u64 start = tbv_dmabuf_clock();
 	u64 perf_start = tbv_perf_clock();
 	int ret = tbv_dmabuf_rx_reap_impl();
 
-	tbv_dmabuf_record(TBV_DMABUF_RX_REAP, start);
 	tbv_perf_wire(&dmabuf_engine.rx.request, false, "rx_reap", perf_start, ret, 0);
 	return ret;
 }
@@ -2096,7 +2018,6 @@ static int tbv_dmabuf_rx_prepare(struct tbv_state *state,
 				 struct tbv_dmabuf_wire *m)
 {
 	struct tbv_dmabuf_rx *rx = &dmabuf_engine.rx;
-	u64 start;
 	u64 perf_start = tbv_perf_clock();
 	u32 i, j;
 	int ret;
@@ -2187,15 +2108,11 @@ static int tbv_dmabuf_rx_prepare(struct tbv_state *state,
 	}
 	rx->request = *m;
 	rx->deadline = jiffies + msecs_to_jiffies(30000);
-	start = tbv_dmabuf_clock();
 	ret = tbv_dmabuf_batch_alloc(&rx->batch, m, &rx->buffer, false);
-	tbv_dmabuf_record(TBV_DMABUF_RX_BUILD, start);
 	if (ret)
 		goto fail;
-	start = tbv_dmabuf_clock();
 	perf_start = tbv_perf_clock();
 	ret = tbv_dmabuf_batch_post(&rx->batch, false);
-	tbv_dmabuf_record(TBV_DMABUF_RX_POST, start);
 	tbv_perf_wire(m, false, "batch_post", perf_start, ret, 0);
 	if (ret)
 		goto fail;
@@ -2428,19 +2345,14 @@ int tbv_dmabuf_handle_packet(struct tbv_state *state,
 static int tbv_dmabuf_exchange(struct tbv_peer *peer, struct tbv_ctrl_pending *pending,
 			       const struct tbv_dmabuf_wire *m, u32 timeout_ms)
 {
-	u64 start;
 	u64 perf_start = tbv_perf_clock();
 	int ret;
 
-	start = tbv_dmabuf_clock();
 	if (pending) {
 		ret = tbv_control_exchange(pending, m, timeout_ms);
 	} else {
 		ret = tbv_control_xdomain_exchange(peer, m, timeout_ms);
 	}
-	if (m->op == TBV_DMABUF_PREPARE || m->op == TBV_DMABUF_STATUS)
-		tbv_dmabuf_record(m->op == TBV_DMABUF_PREPARE ?
-			TBV_DMABUF_PREPARE_TIME : TBV_DMABUF_STATUS_TIME, start);
 	if (ret < 0) {
 		pr_debug("control exchange op=%u token=%llu transport=%d\n",
 			 m->op, m->token, ret);
@@ -2751,7 +2663,6 @@ static int tbv_dmabuf_tx(struct tbv_dmabuf_job *job)
 	memcpy(m.src_domain, peer->xd->local_uuid, 16);
 prepared:
 	do {
-		u64 start;
 		u64 perf_start, batch_start = tbv_perf_clock();
 		unsigned long deadline = jiffies + job->timeout * (job->retries + 1);
 		u32 rnr = 0, failures = 0, credit = 0;
@@ -2779,9 +2690,7 @@ prepared:
 		m.offset = offset;
 		m.bytes = min_t(u32, job->hdr.length - offset,
 			m.count * TBV_DMABUF_BATCH_FRAMES * TBV_DMABUF_FRAME_BYTES);
-		start = tbv_dmabuf_clock();
 		ret = tbv_dmabuf_batch_alloc(batch, &m, &job->buffer, true);
-		tbv_dmabuf_record(TBV_DMABUF_TX_BUILD, start);
 		mutex_unlock(&dmabuf_engine.tx_lock);
 		if (ret)
 			goto drop;
@@ -2852,14 +2761,12 @@ prepared:
 				ret = -ETIMEDOUT;
 				break;
 			}
-			start = tbv_dmabuf_clock();
 			perf_start = tbv_perf_clock();
 			if (ret == TBV_DMABUF_RNR && credits && !offset) {
 				/* The receiver grants a credit once it posts the WQE
 				 * this SEND needs: wait for that instead of polling. */
 				wait_event_timeout(dmabuf_engine.credit_wait,
 					tbv_dmabuf_credit_held(m.dst_host), msecs_to_jiffies(2));
-				tbv_dmabuf_record(TBV_DMABUF_RNR_WAIT, start);
 				tbv_perf_wire(&m, true, "rnr_credit_wait", perf_start, ret, rnr);
 				credit = tbv_dmabuf_credit_settle(job->state, m.dst_host, &m);
 				if (credit)
@@ -2867,8 +2774,6 @@ prepared:
 				continue;
 			}
 			usleep_range(1000, 2000);
-			tbv_dmabuf_record(ret == TBV_DMABUF_RNR ? TBV_DMABUF_RNR_WAIT :
-				TBV_DMABUF_PREPARE_WAIT, start);
 			tbv_perf_wire(&m, true, "prepare_retry_sleep", perf_start, ret, rnr);
 		}
 		if (ret == TBV_DMABUF_DONE) {
@@ -2886,7 +2791,6 @@ prepared:
 		if (ret)
 			goto abort;
 		dma_wmb();
-		start = tbv_dmabuf_clock();
 		perf_start = tbv_perf_clock();
 		/* The receiver is armed for these frames (READY or a credit's
 		 * COMMIT). Post them even for a canceled WR: ABORT would leave
@@ -2896,11 +2800,9 @@ prepared:
 		mutex_lock(&dmabuf_engine.tx_lock);
 		ret = tbv_dmabuf_batch_post(batch, true);
 		mutex_unlock(&dmabuf_engine.tx_lock);
-		tbv_dmabuf_record(TBV_DMABUF_TX_POST, start);
 		tbv_perf_wire(&m, true, "batch_post", perf_start, ret, 0);
 posted:
 		if (!ret) {
-			start = tbv_dmabuf_clock();
 			perf_start = tbv_perf_clock();
 			ret = READ_ONCE(batch->canceled) ? -ECANCELED :
 				tbv_dmabuf_batch_wait(batch, &job->buffer, deadline);
@@ -2917,13 +2819,11 @@ posted:
 				ret = tbv_dmabuf_batch_drain(batch, deadline) ? 0 :
 					atomic_read(&batch->error) ?: -ETIMEDOUT;
 			}
-			tbv_dmabuf_record(TBV_DMABUF_TX_WAIT, start);
 			tbv_perf_wire(&m, true, "tx_dma_wait", perf_start, ret, 0);
 		}
 		if (ret)
 			goto abort;
 		m.op = TBV_DMABUF_STATUS;
-		start = tbv_dmabuf_clock();
 		for (;;) {
 			/* Every frame is sent: a WR canceled now only waits,
 			 * briefly, for the receiver to place them. */
@@ -2961,16 +2861,12 @@ posted:
 				break;
 			}
 			if (!pending) {
-				u64 sleep_start = tbv_dmabuf_clock();
 				u64 perf_sleep = tbv_perf_clock();
 
 				usleep_range(100, 200);
-				tbv_dmabuf_record(TBV_DMABUF_STATUS_WAIT, sleep_start);
 				tbv_perf_wire(&m, true, "status_retry_sleep", perf_sleep, ret, 0);
 			}
 		}
-		if (pending)
-			tbv_dmabuf_record(TBV_DMABUF_DONE_WAIT, start);
 abort:
 		if (ret && (remote_armed || ret == -ETIMEDOUT || ret == -EPROTO)) {
 			m.op = TBV_DMABUF_ABORT;
@@ -3088,12 +2984,9 @@ drop:
 static void tbv_dmabuf_tx_work(struct work_struct *work)
 {
 	struct tbv_dmabuf_job *job = container_of(work, struct tbv_dmabuf_job, work);
-	u64 start = tbv_dmabuf_clock();
-	u64 finish;
 	u64 perf_start = tbv_perf_clock(), perf_end, perf_finish;
 	int ret;
 
-	tbv_dmabuf_record(TBV_DMABUF_QUEUE, job->queued_ns);
 	ret = job->posted || job->buffer.alive(job->buffer.context) ?
 		tbv_dmabuf_tx(job) : -ECANCELED;
 	/* The rings are free for the next submission to post directly. */
@@ -3101,13 +2994,10 @@ static void tbv_dmabuf_tx_work(struct work_struct *work)
 	perf_end = tbv_perf_clock();
 	tbv_perf_interval(&job->perf, "tx_queue", job->perf_queued_ns, perf_start, 0, 0);
 	tbv_perf_interval(&job->perf, "tx_job", perf_start, perf_end, ret, 0);
-	tbv_dmabuf_record(TBV_DMABUF_JOB, start);
-	finish = tbv_dmabuf_clock();
 	perf_finish = tbv_perf_clock();
 	job->buffer.finish(job->buffer.context, ret);
 	tbv_perf_span(&job->perf, "tx_finish", perf_finish, ret, 0);
 	tbv_perf_span(&job->perf, "tx_wr", job->perf_queued_ns, ret, 0);
-	tbv_dmabuf_record(TBV_DMABUF_TX_FINISH, finish);
 	tbv_rail_put(job->route);
 	kfree(job);
 }
@@ -3132,7 +3022,6 @@ int tbv_dmabuf_submit(struct tbv_state *state, struct tbv_rail *rail,
 	job->retries = retries;
 	job->rnr_retries = rnr_retries;
 	job->timeout = timeout ?: msecs_to_jiffies(5000);
-	job->queued_ns = tbv_dmabuf_clock();
 	job->perf_queued_ns = tbv_perf_clock();
 	if (job->perf_queued_ns) {
 		job->perf.src_qp = hdr->src_qp;

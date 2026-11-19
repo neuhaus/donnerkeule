@@ -222,6 +222,10 @@ int main(int argc, char **argv) {
     assert next(e["args"]["token"] for e in events if e["name"] == "tx_wr") == str(0xfedcba9876543210)
     subprocess.run([sys.executable, str(ROOT / "tools/tbv-profile-report.py"), "--capture", f"test={cap}",
                     "--out", str(temp / "report-clean"), "--require-clean"], check=True)
+    clean_summary = json.loads((temp / "report-clean/summary.json").read_text())
+    tx_wr_total = next(t for t in clean_summary["phase_totals"] if t["phase"] == "tx_wr" and t["direction"] == "tx")
+    assert tx_wr_total["calls"] == 1 and tx_wr_total["total_ns"] == 1000 and tx_wr_total["max_ns"] == 1000
+    assert "## Phase totals" in (temp / "report-clean/report.md").read_text()
     meta["per_cpu_stats"]["cpu0"] = "overrun: 3\ncommit overrun: 0\ndropped events: 0\n"
     (cap / "capture.json").write_text(json.dumps(meta))
     (cap / "kernel.trace").write_text(raw + "\n" + record("dma_watchdog", 999, 999) + "\n" + "tbv_perf: phase=broken")

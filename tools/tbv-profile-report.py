@@ -244,6 +244,23 @@ def summarize(captures):
     return output
 
 
+def phase_totals(captures):
+    output = []
+    for capture in captures:
+        groups = defaultdict(list)
+        for row in capture["records"]:
+            if row["kind"] in ("system", "counter"):
+                continue
+            direction = "tx" if row.get("tx") else "rx" if "tx" in row else "app"
+            groups[(row["kind"], row["phase"], direction)].append(row["duration_ns"])
+        for (kind, phase, direction), values in sorted(groups.items()):
+            output.append({"capture": capture["label"], "kind": kind, "phase": phase,
+                           "direction": direction, "calls": len(values),
+                           "total_ns": sum(values), "mean_ns": statistics.mean(values),
+                           "max_ns": max(values)})
+    return output
+
+
 def timeline(captures):
     events = []
     for pid, capture in enumerate(captures, 1):
@@ -283,9 +300,10 @@ def main():
             parser.error("each --capture needs a unique LABEL=DIR")
         captures.append(load_capture(label, Path(directory)))
     stats = summarize(captures)
+    totals = phase_totals(captures)
     args.out.mkdir(parents=True, exist_ok=False)
     receipt = [{k: v for k, v in c.items() if k != "records"} for c in captures]
-    (args.out / "summary.json").write_text(json.dumps({"captures": receipt, "stats": stats}, indent=2) + "\n")
+    (args.out / "summary.json").write_text(json.dumps({"captures": receipt, "stats": stats, "phase_totals": totals}, indent=2) + "\n")
     (args.out / "timeline.json").write_text(json.dumps(timeline(captures)) + "\n")
     lines = ["# Transport profile", "", "Diagnostic timings include profiling overhead. GPU durations use a separate clock.",
              "Nested and parallel rows are not additive. No cross-host clock subtraction.", ""]
@@ -293,7 +311,12 @@ def main():
         lines += [f"## {c['label']}", "", f"Records: {len(c['records'])}.", ""]
         lines += [f"- {p}" for p in c["problems"]] or ["No capture/loss/recovery problems detected."]
         lines += [""]
-    lines += ["## Phase distributions", "", "Times in µs; counters in their stated units. All samples, including failures, retained.", "",
+    lines += ["## Phase totals", "", "Aggregate calls and durations across all message sizes (times in µs).", "",
+              "| Capture | Kind | Phase | Dir | Calls | Total | Mean | Max |", "|---|---|---|---|---:|---:|---:|---:|"]
+    for row in totals:
+        lines.append(f"| {row['capture']} | {row['kind']} | {row['phase']} | {row['direction']} | {row['calls']} | " +
+                     " | ".join(f"{row[key] / 1000:.3f}" for key in ("total_ns", "mean_ns", "max_ns")) + " |")
+    lines += ["", "## Phase distributions", "", "Times in µs; counters in their stated units. All samples, including failures, retained.", "",
               "| Capture | Kind | Phase | Bytes | Dir | Op | N | P50 | P95 | P99 | Max |", "|---|---|---|---:|---|---|---:|---:|---:|---:|---:|"]
     for row in stats:
         scale = 1000 if row["unit"] == "ns" else 1

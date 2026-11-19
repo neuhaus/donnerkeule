@@ -305,7 +305,7 @@ if [[ $SKIP_NATIVE -eq 0 ]]; then
 		run_perftest native-write-64k ib_write_bw 65536
 		run_perftest native-write-1m ib_write_bw 1048576
 		run_perftest native-send-64k ib_send_bw 65536
-		run_perftest native-read-512k ib_read_bw 524288
+		run_perftest native-read-256k ib_read_bw 262144
 		run_verify native
 		snap_counters native-after
 		diff_counters native-before native-after native

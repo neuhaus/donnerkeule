@@ -76,12 +76,13 @@ MODULE_PARM_DESC(dmabuf_poll_control,
 #define TBV_BULK_NHI_ABI 1
 #endif
 static bool dmabuf_batch_doorbell;
-module_param(dmabuf_batch_doorbell, bool, 0444);
+static char *dmabuf_batch_doorbell_mode = "auto";
+module_param_named(dmabuf_batch_doorbell, dmabuf_batch_doorbell_mode, charp, 0444);
 MODULE_PARM_DESC(dmabuf_batch_doorbell,
-	"Publish a data-ring descriptor group with one MMIO doorbell on AMD 158d/158e NHIs; needs the probed tb_ring layout (x86_64, qualified on 7.2.6, 7.2.11, 7.3.3)");
-static uint dmabuf_post_burst = 16;
+	"Publish a data-ring descriptor group with one MMIO doorbell on AMD 158d/158e NHIs: auto, 1/on, or 0/off (default: auto)");
+static uint dmabuf_post_burst;
 module_param(dmabuf_post_burst, uint, 0444);
-MODULE_PARM_DESC(dmabuf_post_burst, "Frames posted per rail turn, 1..512; default 16");
+MODULE_PARM_DESC(dmabuf_post_burst, "Frames posted per rail turn, 1..512; 0 selects 128 with bulk doorbell, 16 otherwise (default: 0)");
 static atomic64_t dmabuf_bulk_calls, dmabuf_bulk_frames, dmabuf_bulk_fallback;
 static atomic64_t dmabuf_progress_ticks, dmabuf_progress_skipped;
 static bool dmabuf_coalesce_copy = true;
@@ -3079,22 +3080,58 @@ static bool tbv_bulk_qualified(void)
 }
 #endif
 
-int tbv_dmabuf_start(struct tbv_state *state)
+static int tbv_dmabuf_resolve_doorbell(void)
 {
-	if (!dmabuf_verbs)
+	const char *mode = dmabuf_batch_doorbell_mode;
+	bool want_on = false;
+
+	if (!mode || !strcmp(mode, "auto")) {
+		want_on = false;
+	} else if (!strcmp(mode, "1") || !strcmp(mode, "on") ||
+		   !strcmp(mode, "y") || !strcmp(mode, "Y") ||
+		   !strcmp(mode, "true")) {
+		want_on = true;
+	} else if (!strcmp(mode, "0") || !strcmp(mode, "off") ||
+		   !strcmp(mode, "n") || !strcmp(mode, "N") ||
+		   !strcmp(mode, "false")) {
+		dmabuf_batch_doorbell = false;
 		return 0;
-	if (!dmabuf_post_burst || dmabuf_post_burst > TBV_DMABUF_BATCH_FRAMES)
+	} else {
+		pr_err("invalid dmabuf_batch_doorbell='%s' (expected auto, 1/on, or 0/off)\n",
+		       mode);
 		return -EINVAL;
-#ifndef TBV_BULK_NHI_ABI
-	if (dmabuf_batch_doorbell) {
+	}
+#ifdef TBV_BULK_NHI_ABI
+	(void)want_on;
+	dmabuf_batch_doorbell = true;
+	if (!tbv_bulk_qualified())
+		pr_warn_once("dmabuf_batch_doorbell on unqualified kernel %s (qualified: 7.2.6, 7.2.11, 7.3.3)\n",
+			     init_utsname()->release);
+	return 0;
+#else
+	dmabuf_batch_doorbell = false;
+	if (want_on) {
 		pr_err("dmabuf_batch_doorbell=1 needs the AMD NHI tb_ring layout on x86_64, which this kernel build does not have\n");
 		return -EOPNOTSUPP;
 	}
-#else
-	if (dmabuf_batch_doorbell && !tbv_bulk_qualified())
-		pr_warn_once("dmabuf_batch_doorbell on unqualified kernel %s (qualified: 7.2.6, 7.2.11, 7.3.3)\n",
-			     init_utsname()->release);
+	pr_info("dmabuf_batch_doorbell=auto: disabled (kernel tb_ring layout does not match)\n");
+	return 0;
 #endif
+}
+
+int tbv_dmabuf_start(struct tbv_state *state)
+{
+	int ret;
+
+	if (!dmabuf_verbs)
+		return 0;
+	ret = tbv_dmabuf_resolve_doorbell();
+	if (ret)
+		return ret;
+	if (!dmabuf_post_burst)
+		dmabuf_post_burst = dmabuf_batch_doorbell ? 128 : 16;
+	if (dmabuf_post_burst > TBV_DMABUF_BATCH_FRAMES)
+		return -EINVAL;
 	if (dmabuf_poll_us && (dmabuf_poll_us < 10 || dmabuf_poll_us > 10000)) {
 		pr_err("dmabuf_poll_us=%u out of range (10..10000)\n", dmabuf_poll_us);
 		return -EINVAL;

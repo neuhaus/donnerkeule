@@ -171,13 +171,75 @@ static int tbv_path_configure_ring_throttling(struct tbv_path *path)
 	return 0;
 }
 
+static struct tb_ring *tbv_hw_ring_alloc_tx(struct tb_nhi *nhi, int hop,
+					    int size, unsigned int flags)
+{
+	return tb_ring_alloc_tx(nhi, hop, size, flags);
+}
+
+static struct tb_ring *
+tbv_hw_ring_alloc_rx(struct tb_nhi *nhi, int hop, int size, unsigned int flags,
+		     int e2e_tx_hop, u16 sof_mask, u16 eof_mask,
+		     void (*start_poll)(void *), void *poll_data)
+{
+	return tb_ring_alloc_rx(nhi, hop, size, flags, e2e_tx_hop, sof_mask,
+				eof_mask, start_poll, poll_data);
+}
+
+static void tbv_hw_ring_free(struct tb_ring *ring)
+{
+	tb_ring_free(ring);
+}
+
+static void tbv_hw_ring_start(struct tb_ring *ring)
+{
+	tb_ring_start(ring);
+}
+
+static void tbv_hw_ring_stop(struct tb_ring *ring)
+{
+	tb_ring_stop(ring);
+}
+
+static int tbv_hw_ring_tx(struct tb_ring *ring, struct ring_frame *frame)
+{
+	return tb_ring_tx(ring, frame);
+}
+
+static int tbv_hw_ring_rx(struct tb_ring *ring, struct ring_frame *frame)
+{
+	return tb_ring_rx(ring, frame);
+}
+
+static struct ring_frame *tbv_hw_ring_poll(struct tb_ring *ring)
+{
+	return tb_ring_poll(ring);
+}
+
+static struct device *tbv_hw_ring_dma_device(struct tb_ring *ring)
+{
+	return tb_ring_dma_device(ring);
+}
+
+const struct tbv_ring_ops tbv_hw_ring_ops = {
+	.alloc_tx = tbv_hw_ring_alloc_tx,
+	.alloc_rx = tbv_hw_ring_alloc_rx,
+	.free = tbv_hw_ring_free,
+	.start = tbv_hw_ring_start,
+	.stop = tbv_hw_ring_stop,
+	.tx = tbv_hw_ring_tx,
+	.rx = tbv_hw_ring_rx,
+	.poll = tbv_hw_ring_poll,
+	.dma_device = tbv_hw_ring_dma_device,
+};
+
 static void tbv_path_tx_packet_release(struct tbv_tx_packet *packet, int status)
 {
 	struct tbv_path *path = packet->path;
 	unsigned long flags;
 
 	if (packet->zcopy && packet->unmap_dma) {
-		struct device *dma_dev = tb_ring_dma_device(path->tx_ring);
+		struct device *dma_dev = path->ring_ops->dma_device(path->tx_ring);
 
 		if (tbv_dma_device_ready(dma_dev))
 			dma_unmap_page(dma_dev, packet->dma, packet->len,
@@ -517,6 +579,7 @@ void tbv_path_init(struct tbv_path *path,
 	path->state = TBV_PATH_NEW;
 	path->cfg = *cfg;
 	path->rail = rail;
+	path->ring_ops = &tbv_hw_ring_ops;
 	spin_lock_init(&path->build_lock);
 	INIT_LIST_HEAD(&path->build_jobs);
 	INIT_DELAYED_WORK(&path->build_work, tbv_ibdev_path_build_work);
@@ -546,7 +609,7 @@ static void tbv_path_tx_complete(struct tb_ring *ring, struct ring_frame *frame,
 	struct tbv_state *state = tbv_path_state(path);
 	unsigned long flags;
 
-	dma_sync_single_for_cpu(tb_ring_dma_device(ring), f->dma,
+	dma_sync_single_for_cpu(path->ring_ops->dma_device(ring), f->dma,
 				TBV_DATA_FRAME_SIZE, DMA_TO_DEVICE);
 	spin_lock_irqsave(&path->tx_lock, flags);
 	packet = f->packet;
@@ -602,7 +665,7 @@ static void tbv_path_tx_poll_work(struct work_struct *work)
 		return;
 
 	atomic64_inc(&path->tx_poll_calls);
-	while ((frame = tb_ring_poll(ring))) {
+	while ((frame = path->ring_ops->poll(ring))) {
 		if (frame->callback)
 			frame->callback(ring, frame, false);
 		completed++;
@@ -628,7 +691,7 @@ static void tbv_path_rx_supp_poll_work(struct work_struct *work)
 		return;
 
 	atomic64_inc(&path->rx_supp_poll_calls);
-	while ((frame = tb_ring_poll(ring))) {
+	while ((frame = path->ring_ops->poll(ring))) {
 		if (frame->callback)
 			frame->callback(ring, frame, false);
 		completed++;
@@ -795,7 +858,7 @@ static void tbv_path_rx_complete(struct tb_ring *ring, struct ring_frame *frame,
 	atomic64_inc(&path->data_rx_completed);
 	atomic64_add(len, &path->rx_bytes);
 
-	dma_sync_single_for_cpu(tb_ring_dma_device(ring), f->dma,
+	dma_sync_single_for_cpu(path->ring_ops->dma_device(ring), f->dma,
 				TBV_DATA_FRAME_SIZE, DMA_FROM_DEVICE);
 	/* Never parse, place or ACK bytes from a descriptor the NHI marked
 	 * corrupt. Do not derive credits from an untrusted header: the next
@@ -920,7 +983,7 @@ static int tbv_path_alloc_frames(struct tbv_path *path, bool tx)
 	u32 *count_out = tx ? &path->tx_frame_count : &path->rx_frame_count;
 	u32 count = tx ? path->cfg.tx_ring_size : path->cfg.rx_ring_size;
 	struct tb_ring *ring = tx ? path->tx_ring : path->rx_ring;
-	struct device *dma_dev = tb_ring_dma_device(ring);
+	struct device *dma_dev = path->ring_ops->dma_device(ring);
 	struct tbv_data_frame *frames;
 	int i;
 	int ret = -ENOMEM;
@@ -988,7 +1051,7 @@ static void tbv_path_free_frames(struct tbv_path *path, bool tx)
 	if (!frames || !ring)
 		return;
 
-	dma_dev = tb_ring_dma_device(ring);
+	dma_dev = path->ring_ops->dma_device(ring);
 	if (!tbv_dma_device_ready(dma_dev)) {
 		pr_warn_ratelimited("%s ring DMA device is not ready for unmapping\n",
 				    tx ? "TX" : "RX");
@@ -1065,9 +1128,9 @@ static int tbv_path_post_rx_frame(struct tbv_data_frame *f)
 	f->frame.flags = 0;
 	f->frame.sof = 0;
 	f->frame.eof = 0;
-	dma_sync_single_for_device(tb_ring_dma_device(path->rx_ring), f->dma,
-				   TBV_DATA_FRAME_SIZE, DMA_FROM_DEVICE);
-	return tb_ring_rx(path->rx_ring, &f->frame);
+	dma_sync_single_for_device(path->ring_ops->dma_device(path->rx_ring),
+				   f->dma, TBV_DATA_FRAME_SIZE, DMA_FROM_DEVICE);
+	return path->ring_ops->rx(path->rx_ring, &f->frame);
 }
 
 const char *tbv_path_state_name(enum tbv_path_state state)
@@ -1115,21 +1178,23 @@ int tbv_path_alloc_rings(struct tbv_path *path, struct tb_xdomain *xd,
 		path->remote_transmit_path = ret;
 	}
 
-	path->tx_ring = tb_ring_alloc_tx(xd->tb->nhi, tx_hop,
-					 path->cfg.tx_ring_size,
-					 path->cfg.tx_flags);
+	path->tx_ring = path->ring_ops->alloc_tx(xd ? xd->tb->nhi : NULL, tx_hop,
+						 path->cfg.tx_ring_size,
+						 path->cfg.tx_flags);
 	if (!path->tx_ring) {
 		ret = -ENOMEM;
 		goto err_in_hop;
 	}
 
-	transmit_path = tb_xdomain_alloc_out_hopid(xd,
-						   requested_transmit_path);
-	if (transmit_path < 0) {
-		ret = transmit_path;
-		goto err_tx_ring;
+	if (xd) {
+		transmit_path = tb_xdomain_alloc_out_hopid(xd,
+							   requested_transmit_path);
+		if (transmit_path < 0) {
+			ret = transmit_path;
+			goto err_tx_ring;
+		}
+		path->local_transmit_path = transmit_path;
 	}
-	path->local_transmit_path = transmit_path;
 	path->local_tx_hop = path->tx_ring->hop;
 
 	if (path->cfg.e2e)
@@ -1138,12 +1203,12 @@ int tbv_path_alloc_rings(struct tbv_path *path, struct tb_xdomain *xd,
 	path->tx_poll_enabled = tbv_path_progress_poll_enabled(path);
 	/* RX completion stays single-sourced; only TX is polled for progress. */
 	path->rx_supp_poll_enabled = false;
-	path->rx_ring = tb_ring_alloc_rx(xd->tb->nhi, rx_hop,
-					 path->cfg.rx_ring_size,
-					 path->cfg.rx_flags, e2e_tx_hop,
-					 path->cfg.sof_mask,
-					 path->cfg.eof_mask,
-					 NULL, NULL);
+	path->rx_ring = path->ring_ops->alloc_rx(xd ? xd->tb->nhi : NULL, rx_hop,
+						 path->cfg.rx_ring_size,
+						 path->cfg.rx_flags, e2e_tx_hop,
+						 path->cfg.sof_mask,
+						 path->cfg.eof_mask,
+						 NULL, NULL);
 	if (!path->rx_ring) {
 		ret = -ENOMEM;
 		goto err_out_hop;
@@ -1179,18 +1244,20 @@ err_rx_frames:
 err_tx_frames:
 	tbv_path_free_frames(path, true);
 err_rx_ring:
-	tb_ring_free(path->rx_ring);
+	path->ring_ops->free(path->rx_ring);
 	path->rx_ring = NULL;
 	path->local_rx_hop = -1;
 err_out_hop:
-	tb_xdomain_release_out_hopid(xd, path->local_transmit_path);
-	path->local_transmit_path = -1;
+	if (xd && path->local_transmit_path >= 0) {
+		tb_xdomain_release_out_hopid(xd, path->local_transmit_path);
+		path->local_transmit_path = -1;
+	}
 err_tx_ring:
-	tb_ring_free(path->tx_ring);
+	path->ring_ops->free(path->tx_ring);
 	path->tx_ring = NULL;
 	path->local_tx_hop = -1;
 err_in_hop:
-	if (path->remote_transmit_path >= 0) {
+	if (xd && path->remote_transmit_path >= 0) {
 		tb_xdomain_release_in_hopid(xd, path->remote_transmit_path);
 		path->remote_transmit_path = -1;
 	}
@@ -1205,8 +1272,8 @@ int tbv_path_start_rings(struct tbv_path *path)
 	if (path->state != TBV_PATH_RING_ALLOCATED)
 		return -EINVAL;
 
-	tb_ring_start(path->tx_ring);
-	tb_ring_start(path->rx_ring);
+	path->ring_ops->start(path->tx_ring);
+	path->ring_ops->start(path->rx_ring);
 	path->state = TBV_PATH_RING_STARTED;
 	for (i = 0; i < path->rx_frame_count; i++) {
 		ret = tbv_path_post_rx_frame(&path->rx_frames[i]);
@@ -1720,7 +1787,7 @@ static void tbv_path_schedule_tx(struct tbv_path *path)
 
 			/* The completion may free the packet before we count it. */
 			tx_len = packet->len;
-			ret = tb_ring_tx(path->tx_ring, &packet->frame);
+			ret = path->ring_ops->tx(path->tx_ring, &packet->frame);
 			if (!ret) {
 				if (state)
 					atomic64_inc(&state->data_tx_posted);
@@ -1793,13 +1860,13 @@ static void tbv_path_schedule_tx(struct tbv_path *path)
 		f->frame.flags = 0;
 		f->frame.sof = packet->sof;
 		f->frame.eof = packet->eof;
-		dma_sync_single_for_device(tb_ring_dma_device(path->tx_ring),
+		dma_sync_single_for_device(path->ring_ops->dma_device(path->tx_ring),
 					   f->dma, TBV_DATA_FRAME_SIZE,
 					   DMA_TO_DEVICE);
 
 		tx_len = packet->len;
 		tx_control = packet->control;
-		ret = tb_ring_tx(path->tx_ring, &f->frame);
+		ret = path->ring_ops->tx(path->tx_ring, &f->frame);
 		if (!ret) {
 			if (state)
 				atomic64_inc(&state->data_tx_posted);
@@ -2134,7 +2201,7 @@ int tbv_path_send_page_stream(struct tbv_path *path,
 	else
 		max_raw_payload = TBV_NATIVE_DATA_MAX_PAYLOAD;
 
-	dma_dev = tb_ring_dma_device(path->tx_ring);
+	dma_dev = path->ring_ops->dma_device(path->tx_ring);
 	if (!tbv_dma_device_ready(dma_dev)) {
 		ret = -EPROBE_DEFER;
 		goto err_meta_done;
@@ -2405,12 +2472,12 @@ void tbv_path_destroy(struct tbv_path *path, struct tb_xdomain *xd)
 		bool stopped = path->rail && READ_ONCE(path->rail->rings_stopped);
 
 		if (path->rx_ring && !stopped)
-			tb_ring_stop(path->rx_ring);
+			path->ring_ops->stop(path->rx_ring);
 		if (path->tx_ring && !stopped)
-			tb_ring_stop(path->tx_ring);
+			path->ring_ops->stop(path->tx_ring);
 		path->state = TBV_PATH_RING_ALLOCATED;
 	}
-	if (!tunnel_enabled && path->remote_transmit_path >= 0) {
+	if (xd && !tunnel_enabled && path->remote_transmit_path >= 0) {
 		tb_xdomain_release_in_hopid(xd, path->remote_transmit_path);
 		path->remote_transmit_path = -1;
 	}
@@ -2419,19 +2486,19 @@ void tbv_path_destroy(struct tbv_path *path, struct tb_xdomain *xd)
 
 	if (path->rx_ring) {
 		tbv_path_free_frames(path, false);
-		tb_ring_free(path->rx_ring);
+		path->ring_ops->free(path->rx_ring);
 		path->rx_ring = NULL;
 		path->local_rx_hop = -1;
 	}
 
-	if (path->local_transmit_path >= 0) {
+	if (xd && path->local_transmit_path >= 0) {
 		tb_xdomain_release_out_hopid(xd, path->local_transmit_path);
 		path->local_transmit_path = -1;
 	}
 
 	if (path->tx_ring) {
 		tbv_path_free_frames(path, true);
-		tb_ring_free(path->tx_ring);
+		path->ring_ops->free(path->tx_ring);
 		path->tx_ring = NULL;
 		path->local_tx_hop = -1;
 	}

@@ -30,8 +30,12 @@ struct tbv_state {
 };
 struct peer {int unused;};
 struct tbv_rail {struct peer *peer;struct {u32 path_id;}key;};
+struct tbv_ring_ops { struct device *(*dma_device)(struct tb_ring *ring); };
+static struct device *shim_dma_device(struct tb_ring *ring) { (void)ring; return NULL; }
+static const struct tbv_ring_ops shim_ring_ops = { .dma_device = shim_dma_device };
 struct tbv_path {
- struct tbv_rail *rail;bool rx_raw_pending,rx_raw_poisoned,rx_data_seq_valid;
+ struct tbv_rail *rail;const struct tbv_ring_ops *ring_ops;
+ bool rx_raw_pending,rx_raw_poisoned,rx_data_seq_valid;
  u16 rx_data_seq_next;int state;
  struct {u32 rx_ring_size;}cfg;
  atomic64_t data_rx_canceled,data_rx_completed,rx_bytes,data_rx_repost_failed,data_rx_lost;
@@ -41,7 +45,6 @@ static struct tbv_state state;
 static unsigned forwarded,raw_calls,reposts,credits,remote_credits;
 static int repost_error;
 static struct tbv_state *tbv_path_state(struct tbv_path *p){(void)p;return &state;}
-static void *tb_ring_dma_device(struct tb_ring *r){return r;}
 static void dma_sync_single_for_cpu(void *d,u64 dma,u32 n,int dir){(void)d;(void)dma;(void)n;(void)dir;}
 static void tbv_ibdev_rx_native_frame(struct tbv_state *s,struct tbv_path *p,const struct tbv_native_data_header *h,const u8 *b){(void)s;(void)p;(void)h;(void)b;forwarded++;}
 static void tbv_path_rx_raw_payload(struct tbv_path*p,struct tbv_state*s,const void*b,u32 n){(void)p;(void)s;(void)b;(void)n;raw_calls++;}
@@ -60,7 +63,7 @@ static struct tb_ring ring;
 static u8 buffer[4096];
 static void reset(void){
  memset(&state,0,sizeof(state));state.verbs_registered=true;
- memset(&path,0,sizeof(path));path.rail=&rail;path.state=TBV_PATH_TUNNEL_ENABLED;path.cfg.rx_ring_size=1024;
+ memset(&path,0,sizeof(path));path.rail=&rail;path.ring_ops=&shim_ring_ops;path.state=TBV_PATH_TUNNEL_ENABLED;path.cfg.rx_ring_size=1024;
  memset(&frame,0,sizeof(frame));frame.path=&path;frame.buf=buffer;frame.frame.size=4096;frame.frame.flags=0xa;
  forwarded=raw_calls=reposts=credits=remote_credits=0;repost_error=0;
 }

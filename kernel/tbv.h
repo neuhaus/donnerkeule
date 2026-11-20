@@ -95,10 +95,29 @@ struct tbv_path_owned_frame {
 	u8 eof;
 };
 
+struct tbv_ring_ops {
+	struct tb_ring *(*alloc_tx)(struct tb_nhi *nhi, int hop, int size,
+				    unsigned int flags);
+	struct tb_ring *(*alloc_rx)(struct tb_nhi *nhi, int hop, int size,
+				    unsigned int flags, int e2e_tx_hop,
+				    u16 sof_mask, u16 eof_mask,
+				    void (*start_poll)(void *), void *poll_data);
+	void (*free)(struct tb_ring *ring);
+	void (*start)(struct tb_ring *ring);
+	void (*stop)(struct tb_ring *ring);
+	int (*tx)(struct tb_ring *ring, struct ring_frame *frame);
+	int (*rx)(struct tb_ring *ring, struct ring_frame *frame);
+	struct ring_frame *(*poll)(struct tb_ring *ring);
+	struct device *(*dma_device)(struct tb_ring *ring);
+};
+
+extern const struct tbv_ring_ops tbv_hw_ring_ops;
+
 struct tbv_path {
 	enum tbv_path_state state;
 	struct tbv_path_config cfg;
 	struct tbv_rail *rail;
+	const struct tbv_ring_ops *ring_ops;
 	struct tb_ring *tx_ring;
 	struct tb_ring *rx_ring;
 	struct tbv_data_frame *tx_frames;

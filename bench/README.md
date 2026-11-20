@@ -152,4 +152,6 @@ The output is deterministic for the same CSV.
 
 ## Historical results
 
-Historical checked-in result sets live under `bench/results/`.
+Markdown qualification reports live under `bench/results/`; the raw logs,
+scripts, and hardware-profile `perftest` archives live in
+[neuhaus/donnerkeule-results](https://github.com/neuhaus/donnerkeule-results).

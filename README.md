@@ -118,12 +118,12 @@ Earlier [architecture checkpoint](docs/history/GPU_RDMA_STATUS_2026-10-04.md) is
   [Phase profiling and parallel NHI posting](bench/results/2026-10-05-verbs-dmabuf-optimization.md)
   reduced 1 MiB and 20 MiB latency by about 21% within the direct path; the
   small-message performance gap remains.
-  The optional [separate NHI control-ring prototype](bench/results/2026-10-06-verbs-control-ring.md)
+  The earlier [separate NHI control-ring prototype](bench/results/2026-10-06-verbs-control-ring.md)
   passed the same matrices with pushed DONE completions. Its small control
-  latency gain does not offset giving up data rings on the tested AMD NHIs;
-  `dmabuf_control_ring` defaults to 0.
+  latency gain did not offset giving up data rings on the tested AMD NHIs,
+  and the prototype was later removed (`last-control-ring` tag).
   [Pushed DONE over the existing XDomain channel](bench/results/2026-10-07-xdomain-done.md)
-  preserves all four data rails. It is opt-in with `dmabuf_push_done=1` and
+  preserves all four data rails; it is active by default under `dmabuf_verbs=1` and
   passed the [16 October driver qualification](bench/results/2026-10-16-verbs-parity.md).
 
 - An earlier exclusive GPU-to-GPU DMA-BUF pool transport (`gpu_direct=1`,

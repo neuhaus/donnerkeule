@@ -36,6 +36,7 @@
 #include <rdma/ib_umem.h>
 #include <rdma/ib_verbs.h>
 
+#include "../proto/dmabuf_tx_fsm.h"
 #include "tbv.h"
 #include "verbs_dmabuf.h"
 #include "verbs_internal.h"
@@ -2589,265 +2590,358 @@ static void tbv_dmabuf_settle_work(struct work_struct *work)
 		tbv_dmabuf_credit_settle(dmabuf_engine.state, hosts[i], NULL);
 }
 
-static int tbv_dmabuf_tx(struct tbv_dmabuf_job *job)
+struct tbv_dmabuf_tx_ctx {
+	struct tbv_dmabuf_job *job;
+	struct tbv_peer *peer;
+	struct tbv_ctrl_pending *pending;
+	struct tbv_dmabuf_wire m;
+	struct tbv_dmabuf_tx_fsm fsm;
+	unsigned long deadline;
+	u64 batch_start;
+	u32 offset;
+	u32 credit;
+	bool fast;
+	bool credits;
+};
+
+static enum tbv_dmabuf_tx_event tbv_dmabuf_tx_build(struct tbv_dmabuf_tx_ctx *c)
 {
-	struct tbv_dmabuf_wire m = {};
+	struct tbv_dmabuf_job *job = c->job;
 	struct tbv_dmabuf_batch *batch = &job->batch;
-	struct tbv_peer *peer = job->route->peer;
-	struct tbv_ctrl_pending *pending = NULL;
-	bool fast = tbv_control_required(peer);
-	bool credits = fast && tbv_dmabuf_credits_enabled() &&
-		READ_ONCE(peer->remote_dmabuf_credit) &&
-		tbv_control_xdomain_required(peer);
-	u32 offset = 0;
-	int ret = 0;
+	u64 perf_start = tbv_perf_clock();
+	int ret;
 
-	if (job->posted) {
-		m = job->wire;
-		pending = job->pending;
-		goto prepared;
-	}
-	m.token = atomic64_inc_return(&dmabuf_engine.token);
-	if (!m.token)
-		return -EOVERFLOW;
-	m.hdr = job->hdr;
-	if (job->perf_queued_ns) {
-		job->perf = tbv_perf_wire_id(&m, true);
-		job->perf.wr_id = job->buffer.wr_id;
-		job->perf.bytes = job->hdr.length;
-	}
-	m.hdr.flags |= TBV_NATIVE_DATA_F_RAW_STREAM;
-	memcpy(m.src_host, job->state->native_host_id, 16);
-	memcpy(m.dst_host, peer->remote_host_id, 16);
-	memcpy(m.src_domain, peer->xd->local_uuid, 16);
-prepared:
-	do {
-		u64 perf_start, batch_start = tbv_perf_clock();
-		unsigned long deadline = jiffies + job->timeout * (job->retries + 1);
-		u32 rnr = 0, failures = 0, credit = 0;
-		bool remote_armed = false, canceled = false;
-
-		if (job->posted) {
-			/* tbv_dmabuf_tx_direct() sent COMMIT and posted the frames. */
-			job->posted = false;
-			deadline = job->deadline;
-			remote_armed = true;
-			ret = job->direct_ret;
-			goto posted;
-		}
-		memset(m.lanes, 0, sizeof(m.lanes));
-		perf_start = tbv_perf_clock();
-		mutex_lock(&dmabuf_engine.tx_lock);
-		dmabuf_engine.active_context = job->buffer.context;
-		dmabuf_engine.active_batch = batch;
-		ret = tbv_dmabuf_tx_paths(job, &m, batch);
-		tbv_perf_span(&job->perf, "tx_paths_lock", perf_start, ret, m.count);
-		if (ret) {
-			mutex_unlock(&dmabuf_engine.tx_lock);
-			goto drop;
-		}
-		m.offset = offset;
-		m.bytes = min_t(u32, job->hdr.length - offset,
-			m.count * TBV_DMABUF_BATCH_FRAMES * TBV_DMABUF_FRAME_BYTES);
-		ret = tbv_dmabuf_batch_alloc(batch, &m, &job->buffer, true);
+	memset(c->m.lanes, 0, sizeof(c->m.lanes));
+	c->credit = 0;
+	mutex_lock(&dmabuf_engine.tx_lock);
+	dmabuf_engine.active_context = job->buffer.context;
+	dmabuf_engine.active_batch = batch;
+	ret = tbv_dmabuf_tx_paths(job, &c->m, batch);
+	tbv_perf_span(&job->perf, "tx_paths_lock", perf_start, ret, c->m.count);
+	if (ret) {
 		mutex_unlock(&dmabuf_engine.tx_lock);
-		if (ret)
-			goto drop;
-		/* Fill any credit this WR cannot use before PREPARE can reach
-		 * the receiver; a matching one replaces the PREPARE exchange. */
-		if (credits)
-			credit = tbv_dmabuf_credit_settle(job->state, m.dst_host,
-							  offset ? NULL : &m);
-		m.op = TBV_DMABUF_PREPARE;
-		if (fast) {
-			pending = tbv_control_open(peer, &m);
-			if (IS_ERR(pending)) {
-				ret = PTR_ERR(pending);
-				pending = NULL;
-				goto drop;
-			}
+		c->fsm.err = ret;
+		return TBV_DMABUF_TX_EV_BUILD_ERR;
+	}
+	c->m.offset = c->offset;
+	c->m.bytes = min_t(u32, job->hdr.length - c->offset,
+		c->m.count * TBV_DMABUF_BATCH_FRAMES * TBV_DMABUF_FRAME_BYTES);
+	ret = tbv_dmabuf_batch_alloc(batch, &c->m, &job->buffer, true);
+	mutex_unlock(&dmabuf_engine.tx_lock);
+	if (ret) {
+		c->fsm.err = ret;
+		return TBV_DMABUF_TX_EV_BUILD_ERR;
+	}
+	if (c->credits)
+		c->credit = tbv_dmabuf_credit_settle(job->state, c->m.dst_host,
+						     c->offset ? NULL : &c->m);
+	c->m.op = TBV_DMABUF_PREPARE;
+	if (c->fast) {
+		c->pending = tbv_control_open(c->peer, &c->m);
+		if (IS_ERR(c->pending)) {
+			c->fsm.err = PTR_ERR(c->pending);
+			c->pending = NULL;
+			return TBV_DMABUF_TX_EV_BUILD_ERR;
 		}
-		for (;;) {
-			if (credit) {
-				/* DONE is registered first; frames may precede COMMIT. */
-				m.op = TBV_DMABUF_COMMIT | TBV_DMABUF_REPLY;
-				m.credit = credit;
-				perf_start = tbv_perf_clock();
-				ret = tbv_control_notify(tbv_control_of(pending), &m);
-				tbv_perf_wire(&m, true, "credit_commit", perf_start, ret, credit);
-				m.op = TBV_DMABUF_PREPARE;
-				m.credit = 0;
-				if (ret)
-					goto drop;
-				ret = TBV_DMABUF_READY;
-				remote_armed = true;
-				break;
-			}
-			if (READ_ONCE(batch->canceled) ||
-			    !job->buffer.alive(job->buffer.context)) {
-				ret = -ECANCELED;
-				break;
-			}
-			ret = tbv_dmabuf_exchange(peer, pending, &m,
-				clamp_t(u32, jiffies_to_msecs(job->timeout), 10, 1000));
-			if (ret == TBV_DMABUF_READY) {
-				if (tbv_control_reply_credit(pending))
-					tbv_dmabuf_credit_adopted(m.dst_host,
-						tbv_control_reply_credit(pending));
-				remote_armed = true;
-				break;
-			}
-			/* The receiver holds a credit for us: use or fill it. */
-			if (ret == TBV_DMABUF_BUSY && credits) {
-				credit = tbv_dmabuf_credit_settle(job->state, m.dst_host,
-								  offset ? NULL : &m);
-				if (credit)
-					continue;
-			}
-			if (ret == TBV_DMABUF_DONE)
-				break;
-			if (ret == TBV_DMABUF_RNR) {
-				if (job->rnr_retries != U8_MAX && rnr++ >= job->rnr_retries) {
-					ret = -EAGAIN;
-					break;
-				}
-				deadline = jiffies + job->timeout * (job->retries + 1);
-			} else if (ret != TBV_DMABUF_BUSY &&
-				   (ret != -ETIMEDOUT || failures++ >= job->retries)) {
-				break;
-			}
-			if (time_after_eq(jiffies, deadline)) {
-				ret = -ETIMEDOUT;
-				break;
-			}
+	}
+	return TBV_DMABUF_TX_EV_BUILD_OK;
+}
+
+static enum tbv_dmabuf_tx_event tbv_dmabuf_tx_arm(struct tbv_dmabuf_tx_ctx *c,
+						  int *status_out)
+{
+	struct tbv_dmabuf_job *job = c->job;
+	u64 perf_start;
+	int ret;
+
+	for (;;) {
+		if (c->credit) {
+			/* DONE is registered first; frames may precede COMMIT. */
+			c->m.op = TBV_DMABUF_COMMIT | TBV_DMABUF_REPLY;
+			c->m.credit = c->credit;
 			perf_start = tbv_perf_clock();
-			if (ret == TBV_DMABUF_RNR && credits && !offset) {
-				/* The receiver grants a credit once it posts the WQE
-				 * this SEND needs: wait for that instead of polling. */
-				wait_event_timeout(dmabuf_engine.credit_wait,
-					tbv_dmabuf_credit_held(m.dst_host), msecs_to_jiffies(2));
-				tbv_perf_wire(&m, true, "rnr_credit_wait", perf_start, ret, rnr);
-				credit = tbv_dmabuf_credit_settle(job->state, m.dst_host, &m);
-				if (credit)
-					rnr--;
+			ret = tbv_control_notify(tbv_control_of(c->pending), &c->m);
+			tbv_perf_wire(&c->m, true, "credit_commit", perf_start,
+				      ret, c->credit);
+			c->m.op = TBV_DMABUF_PREPARE;
+			c->m.credit = 0;
+			*status_out = ret;
+			return ret ? TBV_DMABUF_TX_EV_COMMIT_ERR :
+				     TBV_DMABUF_TX_EV_COMMIT_OK;
+		}
+		if (READ_ONCE(job->batch.canceled) ||
+		    !job->buffer.alive(job->buffer.context)) {
+			*status_out = -ECANCELED;
+			return TBV_DMABUF_TX_EV_CANCELED;
+		}
+		ret = tbv_dmabuf_exchange(c->peer, c->pending, &c->m,
+			clamp_t(u32, jiffies_to_msecs(job->timeout), 10, 1000));
+		if (ret == TBV_DMABUF_READY) {
+			if (tbv_control_reply_credit(c->pending))
+				tbv_dmabuf_credit_adopted(c->m.dst_host,
+					tbv_control_reply_credit(c->pending));
+			*status_out = 0;
+			return TBV_DMABUF_TX_EV_PREPARE_READY;
+		}
+		/* The receiver holds a credit for us: use or fill it. */
+		if (ret == TBV_DMABUF_BUSY && c->credits) {
+			c->credit = tbv_dmabuf_credit_settle(job->state,
+				c->m.dst_host, c->offset ? NULL : &c->m);
+			if (c->credit)
 				continue;
-			}
-			usleep_range(1000, 2000);
-			tbv_perf_wire(&m, true, "prepare_retry_sleep", perf_start, ret, rnr);
 		}
-		if (ret == TBV_DMABUF_DONE) {
-			tbv_control_close(pending);
-			pending = NULL;
-			mutex_lock(&dmabuf_engine.tx_lock);
-			dmabuf_engine.active_context = NULL;
-			dmabuf_engine.active_batch = NULL;
-			tbv_dmabuf_batch_drop(batch, false);
-			mutex_unlock(&dmabuf_engine.tx_lock);
-			tbv_perf_wire(&m, true, "batch", batch_start, 0, 0);
-			offset += m.bytes;
+		*status_out = ret;
+		if (ret == TBV_DMABUF_DONE)
+			return TBV_DMABUF_TX_EV_PREPARE_DONE;
+		if (ret == TBV_DMABUF_RNR)
+			return TBV_DMABUF_TX_EV_PREPARE_RNR;
+		if (ret == TBV_DMABUF_BUSY)
+			return TBV_DMABUF_TX_EV_PREPARE_BUSY;
+		return TBV_DMABUF_TX_EV_PREPARE_ERR;
+	}
+}
+
+static void tbv_dmabuf_tx_wait_rnr(struct tbv_dmabuf_tx_ctx *c)
+{
+	struct tbv_dmabuf_job *job = c->job;
+	u64 perf_start = tbv_perf_clock();
+
+	c->deadline = jiffies + job->timeout * (job->retries + 1);
+	if (c->credits && !c->offset) {
+		/* The receiver grants a credit once it posts the WQE
+		 * this SEND needs: wait for that instead of polling. */
+		wait_event_timeout(dmabuf_engine.credit_wait,
+			tbv_dmabuf_credit_held(c->m.dst_host), msecs_to_jiffies(2));
+		tbv_perf_wire(&c->m, true, "rnr_credit_wait", perf_start,
+			      TBV_DMABUF_RNR, c->fsm.rnr);
+		c->credit = tbv_dmabuf_credit_settle(job->state, c->m.dst_host,
+						     &c->m);
+		if (c->credit)
+			c->fsm.rnr--;
+		return;
+	}
+	usleep_range(1000, 2000);
+	tbv_perf_wire(&c->m, true, "prepare_retry_sleep", perf_start,
+		      TBV_DMABUF_RNR, c->fsm.rnr);
+}
+
+static enum tbv_dmabuf_tx_event tbv_dmabuf_tx_post(struct tbv_dmabuf_tx_ctx *c,
+						   int *status_out)
+{
+	u64 perf_start = tbv_perf_clock();
+	int ret;
+
+	dma_wmb();
+	/* The receiver is armed for these frames (READY or a credit's
+	 * COMMIT). Post them even for a canceled WR: ABORT would leave
+	 * its descriptors armed, and it stops its rails to reclaim them.
+	 * QP destroy waits for this worker, so the buffer stays valid;
+	 * the wait below bounds a canceled batch to the drain time. */
+	mutex_lock(&dmabuf_engine.tx_lock);
+	ret = tbv_dmabuf_batch_post(&c->job->batch, true);
+	mutex_unlock(&dmabuf_engine.tx_lock);
+	tbv_perf_wire(&c->m, true, "batch_post", perf_start, ret, 0);
+	*status_out = ret;
+	return ret ? TBV_DMABUF_TX_EV_POST_ERR : TBV_DMABUF_TX_EV_POST_OK;
+}
+
+static enum tbv_dmabuf_tx_event
+tbv_dmabuf_tx_wait_dma(struct tbv_dmabuf_tx_ctx *c, int *status_out)
+{
+	struct tbv_dmabuf_job *job = c->job;
+	struct tbv_dmabuf_batch *batch = &job->batch;
+	u64 perf_start = tbv_perf_clock();
+	int ret;
+
+	ret = READ_ONCE(batch->canceled) ? -ECANCELED :
+		tbv_dmabuf_batch_wait(batch, &job->buffer, c->deadline);
+	if (ret == -ECANCELED) {
+		/* The WR is gone but its frames are posted to an armed
+		 * receiver: finish the batch, as far as DONE, instead of
+		 * aborting it and its rails. */
+		unsigned long drain = jiffies +
+			msecs_to_jiffies(TBV_DMABUF_CANCEL_DRAIN_MS);
+
+		c->fsm.canceled = true;
+		if (time_before(drain, c->deadline))
+			c->deadline = drain;
+		ret = tbv_dmabuf_batch_drain(batch, c->deadline) ? 0 :
+			atomic_read(&batch->error) ?: -ETIMEDOUT;
+		tbv_perf_wire(&c->m, true, "tx_dma_wait", perf_start, ret, 0);
+		*status_out = ret;
+		if (!ret)
+			c->m.op = TBV_DMABUF_STATUS;
+		return ret ? TBV_DMABUF_TX_EV_DMA_ERR :
+			     TBV_DMABUF_TX_EV_DMA_DRAINED;
+	}
+	tbv_perf_wire(&c->m, true, "tx_dma_wait", perf_start, ret, 0);
+	*status_out = ret;
+	if (!ret)
+		c->m.op = TBV_DMABUF_STATUS;
+	return ret ? TBV_DMABUF_TX_EV_DMA_ERR : TBV_DMABUF_TX_EV_DMA_OK;
+}
+
+static enum tbv_dmabuf_tx_event
+tbv_dmabuf_tx_wait_done(struct tbv_dmabuf_tx_ctx *c, int *status_out)
+{
+	struct tbv_dmabuf_job *job = c->job;
+	int ret;
+
+	/* Every frame is sent: a WR canceled now only waits, briefly, for the
+	 * receiver to place them. */
+	if (!c->fsm.canceled && (READ_ONCE(job->batch.canceled) ||
+				 !job->buffer.alive(job->buffer.context))) {
+		unsigned long drain = jiffies +
+			msecs_to_jiffies(TBV_DMABUF_CANCEL_DRAIN_MS);
+
+		c->fsm.canceled = true;
+		if (time_before(drain, c->deadline))
+			c->deadline = drain;
+	}
+	if (c->pending) {
+		/* DONE is registered before PREPARE, so a notification arriving
+		 * before local TX completion is retained. Only probe cached
+		 * status after a missed 10 ms notification. */
+		ret = tbv_control_wait_done(c->pending, 10);
+		if (ret == TBV_DMABUF_BUSY) {
+			tbv_perf_wire_mark(&c->m, true, "status_fallback", ret, 0);
+			ret = tbv_dmabuf_exchange(c->peer, c->pending, &c->m,
+				clamp_t(u32, jiffies_to_msecs(job->timeout), 10, 1000));
+		}
+	} else {
+		ret = tbv_dmabuf_exchange(c->peer, NULL, &c->m,
+			clamp_t(u32, jiffies_to_msecs(job->timeout), 10, 1000));
+	}
+	*status_out = ret;
+	if (ret == TBV_DMABUF_DONE)
+		return TBV_DMABUF_TX_EV_DONE_OK;
+	if (ret == TBV_DMABUF_BUSY || ret == -ETIMEDOUT)
+		return TBV_DMABUF_TX_EV_DONE_BUSY;
+	return TBV_DMABUF_TX_EV_DONE_ERR;
+}
+
+static int tbv_dmabuf_tx_batch(struct tbv_dmabuf_tx_ctx *c)
+{
+	struct tbv_dmabuf_job *job = c->job;
+	enum tbv_dmabuf_tx_action act;
+	enum tbv_dmabuf_tx_event ev;
+	int status = 0;
+
+	c->batch_start = tbv_perf_clock();
+	tbv_dmabuf_tx_fsm_init(&c->fsm, job->retries, job->rnr_retries,
+			       job->posted, job->direct_ret);
+	if (job->posted) {
+		job->posted = false;
+		c->deadline = job->deadline;
+	} else {
+		c->deadline = jiffies + job->timeout * (job->retries + 1);
+	}
+	act = tbv_dmabuf_tx_fsm_initial_action(&c->fsm);
+	while (act != TBV_DMABUF_TX_ACT_FINISH) {
+		switch (act) {
+		case TBV_DMABUF_TX_ACT_BUILD:
+			ev = tbv_dmabuf_tx_build(c);
+			status = c->fsm.err;
+			break;
+		case TBV_DMABUF_TX_ACT_ARM:
+			ev = tbv_dmabuf_tx_arm(c, &status);
+			break;
+		case TBV_DMABUF_TX_ACT_WAIT_RNR:
+			tbv_dmabuf_tx_wait_rnr(c);
+			act = TBV_DMABUF_TX_ACT_ARM;
 			continue;
-		}
-		if (ret)
-			goto abort;
-		dma_wmb();
-		perf_start = tbv_perf_clock();
-		/* The receiver is armed for these frames (READY or a credit's
-		 * COMMIT). Post them even for a canceled WR: ABORT would leave
-		 * its descriptors armed, and it stops its rails to reclaim them.
-		 * QP destroy waits for this worker, so the buffer stays valid;
-		 * the wait below bounds a canceled batch to the drain time. */
-		mutex_lock(&dmabuf_engine.tx_lock);
-		ret = tbv_dmabuf_batch_post(batch, true);
-		mutex_unlock(&dmabuf_engine.tx_lock);
-		tbv_perf_wire(&m, true, "batch_post", perf_start, ret, 0);
-posted:
-		if (!ret) {
-			perf_start = tbv_perf_clock();
-			ret = READ_ONCE(batch->canceled) ? -ECANCELED :
-				tbv_dmabuf_batch_wait(batch, &job->buffer, deadline);
-			if (ret == -ECANCELED) {
-				/* The WR is gone but its frames are posted to an
-				 * armed receiver: finish the batch, as far as
-				 * DONE, instead of aborting it and its rails. */
-				unsigned long drain = jiffies +
-					msecs_to_jiffies(TBV_DMABUF_CANCEL_DRAIN_MS);
-
-				canceled = true;
-				if (time_before(drain, deadline))
-					deadline = drain;
-				ret = tbv_dmabuf_batch_drain(batch, deadline) ? 0 :
-					atomic_read(&batch->error) ?: -ETIMEDOUT;
-			}
-			tbv_perf_wire(&m, true, "tx_dma_wait", perf_start, ret, 0);
-		}
-		if (ret)
-			goto abort;
-		m.op = TBV_DMABUF_STATUS;
-		for (;;) {
-			/* Every frame is sent: a WR canceled now only waits,
-			 * briefly, for the receiver to place them. */
-			if (!canceled && (READ_ONCE(batch->canceled) ||
-					  !job->buffer.alive(job->buffer.context))) {
-				unsigned long drain = jiffies +
-					msecs_to_jiffies(TBV_DMABUF_CANCEL_DRAIN_MS);
-
-				canceled = true;
-				if (time_before(drain, deadline))
-					deadline = drain;
-			}
-			if (pending) {
-				/* DONE is registered before PREPARE, so a notification
-				 * arriving before local TX completion is retained. Only
-				 * probe cached status after a missed 10 ms notification. */
-				ret = tbv_control_wait_done(pending, 10);
-				if (ret == TBV_DMABUF_BUSY) {
-					tbv_perf_wire_mark(&m, true, "status_fallback", ret, 0);
-					ret = tbv_dmabuf_exchange(peer, pending, &m,
-						clamp_t(u32, jiffies_to_msecs(job->timeout), 10, 1000));
-				}
-			} else {
-				ret = tbv_dmabuf_exchange(peer, NULL, &m,
-					clamp_t(u32, jiffies_to_msecs(job->timeout), 10, 1000));
-			}
-			if (ret == TBV_DMABUF_DONE) {
-				ret = 0;
-				break;
-			}
-			if (ret != TBV_DMABUF_BUSY && ret != -ETIMEDOUT)
-				break;
-			if (time_after_eq(jiffies, deadline)) {
-				ret = -ETIMEDOUT;
-				break;
-			}
-			if (!pending) {
+		case TBV_DMABUF_TX_ACT_SLEEP_ARM:
+			usleep_range(1000, 2000);
+			tbv_perf_wire(&c->m, true, "prepare_retry_sleep",
+				      tbv_perf_clock(), status, c->fsm.rnr);
+			act = TBV_DMABUF_TX_ACT_ARM;
+			continue;
+		case TBV_DMABUF_TX_ACT_POST:
+			ev = tbv_dmabuf_tx_post(c, &status);
+			break;
+		case TBV_DMABUF_TX_ACT_WAIT_DMA:
+			ev = tbv_dmabuf_tx_wait_dma(c, &status);
+			break;
+		case TBV_DMABUF_TX_ACT_WAIT_DONE:
+			ev = tbv_dmabuf_tx_wait_done(c, &status);
+			break;
+		case TBV_DMABUF_TX_ACT_SLEEP_DONE:
+			if (!c->pending) {
 				u64 perf_sleep = tbv_perf_clock();
 
 				usleep_range(100, 200);
-				tbv_perf_wire(&m, true, "status_retry_sleep", perf_sleep, ret, 0);
+				tbv_perf_wire(&c->m, true, "status_retry_sleep",
+					      perf_sleep, status, 0);
 			}
+			act = TBV_DMABUF_TX_ACT_WAIT_DONE;
+			continue;
+		case TBV_DMABUF_TX_ACT_ABORT:
+			if (tbv_dmabuf_tx_needs_abort(&c->fsm)) {
+				c->m.op = TBV_DMABUF_ABORT;
+				tbv_dmabuf_exchange(c->peer, c->pending, &c->m, 1000);
+			}
+			ev = TBV_DMABUF_TX_EV_ABORT_DONE;
+			status = c->fsm.err;
+			break;
+		case TBV_DMABUF_TX_ACT_FINISH:
+			continue;
 		}
-abort:
-		if (ret && (remote_armed || ret == -ETIMEDOUT || ret == -EPROTO)) {
-			m.op = TBV_DMABUF_ABORT;
-			tbv_dmabuf_exchange(peer, pending, &m, 1000);
+		act = tbv_dmabuf_tx_fsm_step(&c->fsm, ev, status,
+					     time_after_eq(jiffies, c->deadline));
+	}
+
+	tbv_control_close(c->pending);
+	c->pending = NULL;
+	mutex_lock(&dmabuf_engine.tx_lock);
+	dmabuf_engine.active_context = NULL;
+	dmabuf_engine.active_batch = NULL;
+	tbv_dmabuf_batch_drop(&job->batch, !!c->fsm.err);
+	mutex_unlock(&dmabuf_engine.tx_lock);
+	tbv_perf_wire(&c->m, true, "batch", c->batch_start, c->fsm.err, 0);
+	if (c->fsm.canceled)
+		atomic64_inc(c->fsm.err ? &dmabuf_cancel_stopped :
+					  &dmabuf_cancel_drained);
+	return tbv_dmabuf_tx_fsm_result(&c->fsm);
+}
+
+static int tbv_dmabuf_tx(struct tbv_dmabuf_job *job)
+{
+	struct tbv_dmabuf_tx_ctx c = {
+		.job = job,
+		.peer = job->route->peer,
+	};
+	int ret;
+
+	c.fast = tbv_control_required(c.peer);
+	c.credits = c.fast && tbv_dmabuf_credits_enabled() &&
+		    READ_ONCE(c.peer->remote_dmabuf_credit) &&
+		    tbv_control_xdomain_required(c.peer);
+
+	if (job->posted) {
+		c.m = job->wire;
+		c.pending = job->pending;
+	} else {
+		c.m.token = atomic64_inc_return(&dmabuf_engine.token);
+		if (!c.m.token)
+			return -EOVERFLOW;
+		c.m.hdr = job->hdr;
+		if (job->perf_queued_ns) {
+			job->perf = tbv_perf_wire_id(&c.m, true);
+			job->perf.wr_id = job->buffer.wr_id;
+			job->perf.bytes = job->hdr.length;
 		}
-drop:
-		tbv_control_close(pending);
-		pending = NULL;
-		mutex_lock(&dmabuf_engine.tx_lock);
-		dmabuf_engine.active_context = NULL;
-		dmabuf_engine.active_batch = NULL;
-		tbv_dmabuf_batch_drop(batch, !!ret);
-		mutex_unlock(&dmabuf_engine.tx_lock);
-		tbv_perf_wire(&m, true, "batch", batch_start, ret, 0);
-		if (canceled)
-			atomic64_inc(ret ? &dmabuf_cancel_stopped : &dmabuf_cancel_drained);
+		c.m.hdr.flags |= TBV_NATIVE_DATA_F_RAW_STREAM;
+		memcpy(c.m.src_host, job->state->native_host_id, 16);
+		memcpy(c.m.dst_host, c.peer->remote_host_id, 16);
+		memcpy(c.m.src_domain, c.peer->xd->local_uuid, 16);
+	}
+
+	do {
+		ret = tbv_dmabuf_tx_batch(&c);
 		if (ret)
 			return ret;
-		if (canceled)
-			return -ECANCELED;
-		offset += m.bytes;
-	} while (offset < job->hdr.length);
+		c.offset += c.m.bytes;
+	} while (c.offset < job->hdr.length);
 	return 0;
 }
 

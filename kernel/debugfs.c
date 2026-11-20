@@ -33,12 +33,8 @@ static int tbv_debugfs_summary_show(struct seq_file *s, void *unused)
 	seq_printf(s, "native_control: %s\n",
 		   tbv_native_control_mode_name(state));
 	seq_printf(s, "native_same_peer_multicable: %s\n",
-		   !state->native_control_registered ? "off" :
-		   state->native_control_source_aware ||
-		   state->native_control_ids ? "enabled" : "limited");
+		   !state->native_control_registered ? "off" : "enabled");
 	seq_printf(s, "native_host_id: %16phN\n", state->native_host_id);
-	seq_printf(s, "native_legacy_ambiguous_limited: %lld\n",
-		   atomic64_read(&state->native_legacy_ambiguous_limited));
 	seq_printf(s, "configured_links: %u\n", tbv_link_count(state));
 	seq_printf(s, "native_service_count: %u\n",
 		   state->native_dir_count);

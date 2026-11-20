@@ -32,12 +32,6 @@ static u32 tbv_native_control_caps(const struct tbv_state *state,
 		caps |= TBV_NATIVE_WIRE_CAP_MULTI_RAIL;
 	if (tbv_dmabuf_verbs_enabled())
 		caps |= TBV_NATIVE_WIRE_CAP_DMABUF_VERBS;
-	if (tbv_control_enabled())
-		caps |= TBV_NATIVE_WIRE_CAP_CONTROL_RING;
-	if (tbv_control_push_enabled())
-		caps |= TBV_NATIVE_WIRE_CAP_PUSH_DONE;
-	if (tbv_dmabuf_credits_enabled())
-		caps |= TBV_NATIVE_WIRE_CAP_DMABUF_CREDIT;
 	return caps;
 }
 
@@ -75,7 +69,6 @@ static void tbv_native_control_fill_hello(const struct tbv_state *state,
 		memcpy(hello->src_domain, peer->xd->local_uuid,
 		       sizeof(hello->src_domain));
 	memcpy(hello->host_id, state->native_host_id, sizeof(hello->host_id));
-	hello->has_ids = 1;
 }
 
 /*
@@ -89,9 +82,6 @@ tbv_native_control_find_source(struct tbv_state *state,
 {
 	struct tb_xdomain *found = NULL;
 	struct tbv_peer *peer;
-
-	if (!remote->has_ids)
-		return NULL;
 
 	mutex_lock(&state->lock);
 	list_for_each_entry(peer, &state->peers, node) {
@@ -247,10 +237,8 @@ static int tbv_native_control_apply_remote(struct tbv_state *state,
 	struct tbv_peer *peer;
 	int ret = -ENOENT;
 
-	if ((remote->capabilities & TBV_NATIVE_WIRE_CAP_GPU_DIRECT) ||
-	    !!(remote->capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_VERBS) !=
-	    tbv_dmabuf_verbs_enabled() ||
-	    (tbv_dmabuf_verbs_enabled() && !remote->has_ids))
+	if (!!(remote->capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_VERBS) !=
+	    tbv_dmabuf_verbs_enabled())
 		return -EPROTONOSUPPORT;
 
 	mutex_lock(&state->lock);
@@ -275,21 +263,13 @@ static int tbv_native_control_apply_remote(struct tbv_state *state,
 				continue;
 
 			rail->native_negotiated = true;
-			peer->remote_control_ring =
-				!!(remote->capabilities & TBV_NATIVE_WIRE_CAP_CONTROL_RING);
-			peer->remote_push_done =
-				!!(remote->capabilities & TBV_NATIVE_WIRE_CAP_PUSH_DONE);
-			peer->remote_dmabuf_credit =
-				!!(remote->capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_CREDIT);
 			rail->remote_rail_id = remote->rail_id;
 			rail->remote_transmit_path = remote->transmit_path;
 			rail->remote_tx_hop = remote->tx_hop;
 			rail->remote_rx_hop = remote->rx_hop;
-			if (remote->has_ids) {
-				memcpy(peer->remote_host_id, remote->host_id,
-				       sizeof(peer->remote_host_id));
-				peer->remote_host_known = true;
-			}
+			memcpy(peer->remote_host_id, remote->host_id,
+			       sizeof(peer->remote_host_id));
+			peer->remote_host_known = true;
 			tbv_path_set_remote_rx_capacity(&rail->path,
 							remote->rx_ring_size);
 			ret = 0;
@@ -320,8 +300,7 @@ static int tbv_native_control_mark_remote_ready(struct tbv_state *state,
 	struct tbv_peer *peer;
 	int ret = -ENOENT;
 
-	if ((remote->capabilities & TBV_NATIVE_WIRE_CAP_GPU_DIRECT) ||
-	    !!(remote->capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_VERBS) !=
+	if (!!(remote->capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_VERBS) !=
 	    tbv_dmabuf_verbs_enabled())
 		return -EPROTONOSUPPORT;
 
@@ -331,9 +310,8 @@ static int tbv_native_control_mark_remote_ready(struct tbv_state *state,
 
 		if (!tbv_native_control_peer_matches_source(peer, source_xd))
 			continue;
-		if (tbv_dmabuf_verbs_enabled() &&
-		    (!remote->has_ids || (peer->remote_host_known &&
-		     memcmp(peer->remote_host_id, remote->host_id, 16)))) {
+		if (tbv_dmabuf_verbs_enabled() && peer->remote_host_known &&
+		    memcmp(peer->remote_host_id, remote->host_id, 16)) {
 			ret = -ESTALE;
 			goto out;
 		}
@@ -435,12 +413,20 @@ int tbv_native_control_handle_packet(struct tbv_state *state,
 		return 1;
 
 	ret = tbv_native_wire_parse_hello(buf, size, &remote, &info);
+	if (ret == -EPROTONOSUPPORT) {
+		pr_err_ratelimited("peer speaks revision %u, this build %u: install the same build on both hosts\n",
+				   info.version, TBV_NATIVE_WIRE_VERSION);
+		return 1;
+	}
 	if (ret)
 		return 0;
-	if ((remote.capabilities & TBV_NATIVE_WIRE_CAP_GPU_DIRECT) ||
-	    !!(remote.capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_VERBS) !=
-	    tbv_dmabuf_verbs_enabled())
+	if (!!(remote.capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_VERBS) !=
+	    tbv_dmabuf_verbs_enabled()) {
+		pr_err_ratelimited("peer dmabuf_verbs=%u does not match local dmabuf_verbs=%u\n",
+				   !!(remote.capabilities & TBV_NATIVE_WIRE_CAP_DMABUF_VERBS),
+				   tbv_dmabuf_verbs_enabled());
 		return 1;
+	}
 
 	/*
 	 * A source-blind handler does not say which link a message came over;
@@ -610,6 +596,11 @@ static int tbv_native_control_exchange_once(struct tbv_state *state,
 
 	ret = tbv_native_wire_parse_hello(response, sizeof(response), &remote,
 					 &info);
+	if (ret == -EPROTONOSUPPORT) {
+		pr_err_ratelimited("peer speaks revision %u, this build %u: install the same build on both hosts\n",
+				   info.version, TBV_NATIVE_WIRE_VERSION);
+		goto out_unlock;
+	}
 	if (ret)
 		goto out_unlock;
 	if (info.op != TBV_NATIVE_WIRE_OP_HELLO_ACK) {
@@ -664,6 +655,11 @@ static int tbv_native_control_ready_once(struct tbv_state *state,
 
 	ret = tbv_native_wire_parse_hello(response, sizeof(response), &remote,
 					 &info);
+	if (ret == -EPROTONOSUPPORT) {
+		pr_err_ratelimited("peer speaks revision %u, this build %u: install the same build on both hosts\n",
+				   info.version, TBV_NATIVE_WIRE_VERSION);
+		goto out_unlock;
+	}
 	if (ret)
 		goto out_unlock;
 	if (info.op != TBV_NATIVE_WIRE_OP_READY_ACK ||
@@ -863,10 +859,8 @@ int tbv_native_control_start(struct tbv_state *state)
 	state->native_control_source_aware = false;
 	ret = tbv_native_control_legacy_start(state);
 #endif
-	if (!ret) {
+	if (!ret)
 		state->native_control_registered = true;
-		state->native_control_ids = true;
-	}
 	return ret;
 }
 
@@ -880,7 +874,6 @@ void tbv_native_control_stop(struct tbv_state *state)
 	if (state) {
 		state->native_control_registered = false;
 		state->native_control_source_aware = false;
-		state->native_control_ids = false;
 	}
 }
 

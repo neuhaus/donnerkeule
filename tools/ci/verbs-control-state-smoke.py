@@ -108,7 +108,6 @@ struct tbv_control {
     bool ready, xdomain;
 };
 struct tbv_peer {
-    bool remote_control_ring, remote_push_done;
     struct tbv_control *dmabuf_control;
 };
 """
@@ -159,14 +158,13 @@ int main(void) {
     struct tbv_dmabuf_wire m, late;
     ctrl.pending.next = ctrl.pending.prev = &ctrl.pending;
     ctrl.ready = true;
-    /* Module parameters and peer capabilities through the kernel wrappers. */
-    for (unsigned int flags = 0; flags < 4; flags++) {
-        bool push = (flags & 3) == 3;
-        dmabuf_push_done = flags & 1;
-        peer.remote_push_done = flags & 2;
+    /* Module parameters through the kernel wrappers. */
+    for (unsigned int flags = 0; flags < 2; flags++) {
+        bool push = flags & 1;
+        dmabuf_push_done = push;
         dmabuf_verbs = true;
         assert(!tbv_control_enabled());
-        assert(tbv_control_push_enabled() == (bool)(flags & 1));
+        assert(tbv_control_push_enabled() == push);
         assert(tbv_control_xdomain_required(&peer) == push);
         assert(tbv_control_required(&peer) == push);
         peer.dmabuf_control = &ctrl;

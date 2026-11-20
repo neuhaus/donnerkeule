@@ -81,9 +81,8 @@ bool tbv_control_push_enabled(void)
 
 bool tbv_control_xdomain_required(const struct tbv_peer *peer)
 {
-	return tbv_ctrl_need_xdomain(false, false,
-				     tbv_control_push_enabled(),
-				     READ_ONCE(peer->remote_push_done));
+	(void)peer;
+	return tbv_control_push_enabled();
 }
 
 bool tbv_control_required(const struct tbv_peer *peer)
@@ -674,8 +673,7 @@ MODULE_PARM_DESC(dmabuf_fault,
 bool tbv_control_credits(const struct tbv_control *ctrl)
 {
 	return ctrl && READ_ONCE(ctrl->running) &&
-		!READ_ONCE(ctrl->failure) && tbv_dmabuf_credits_enabled() &&
-		READ_ONCE(ctrl->peer->remote_dmabuf_credit);
+		!READ_ONCE(ctrl->failure) && tbv_dmabuf_credits_enabled();
 }
 
 /* One-way CREDIT, COMMIT or RELEASE. Like DONE it is an XDomain response,
@@ -730,9 +728,8 @@ void tbv_control_debugfs_show(struct seq_file *s, struct tbv_peer *peer)
 	struct tbv_control *ctrl = peer->dmabuf_control;
 	u32 i;
 
-	seq_printf(s, "  push_done: requested=%u remote=%u ready=%u\n",
-		tbv_control_push_enabled(), peer->remote_push_done,
-		ctrl && tbv_control_ready(peer));
+	seq_printf(s, "  push_done: requested=%u ready=%u\n",
+		tbv_control_push_enabled(), ctrl && tbv_control_ready(peer));
 	seq_printf(s, "  nhi_hop_count: %u\n", peer->xd->tb->nhi->hop_count);
 	if (!ctrl)
 		return;

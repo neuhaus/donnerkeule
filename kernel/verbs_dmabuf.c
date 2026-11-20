@@ -2386,7 +2386,7 @@ void tbv_dmabuf_credit_received(struct tbv_peer *peer,
 	unsigned long flags;
 	bool settle = false;
 
-	if (!tbv_dmabuf_credits_enabled() || !READ_ONCE(peer->remote_dmabuf_credit))
+	if (!tbv_dmabuf_credits_enabled())
 		return;
 	spin_lock_irqsave(&dmabuf_engine.credit_lock, flags);
 	c = tbv_dmabuf_credit_slot(m->dst_host, true);
@@ -2914,7 +2914,6 @@ static int tbv_dmabuf_tx(struct tbv_dmabuf_job *job)
 
 	c.fast = tbv_control_required(c.peer);
 	c.credits = c.fast && tbv_dmabuf_credits_enabled() &&
-		    READ_ONCE(c.peer->remote_dmabuf_credit) &&
 		    tbv_control_xdomain_required(c.peer);
 
 	if (job->posted) {
@@ -2961,7 +2960,7 @@ static void tbv_dmabuf_tx_direct(struct tbv_dmabuf_job *job)
 	u32 credit;
 	int ret;
 
-	if (!tbv_dmabuf_credits_enabled() || !READ_ONCE(peer->remote_dmabuf_credit) ||
+	if (!tbv_dmabuf_credits_enabled() ||
 	    !tbv_control_xdomain_required(peer) ||
 	    (job->hdr.opcode != TBV_NATIVE_DATA_OP_SEND &&
 	     job->hdr.opcode != TBV_NATIVE_DATA_OP_SEND_IMM) ||

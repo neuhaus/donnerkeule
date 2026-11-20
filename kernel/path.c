@@ -753,8 +753,6 @@ static u32 tbv_path_rx_note_seq(struct tbv_path *path, const void *buf)
 	u16 seq = v & TBV_NATIVE_DATA_PATH_SEQ_MASK;
 	u32 lost = 0;
 
-	if (!(v & TBV_NATIVE_DATA_PATH_SEQ_PRESENT))
-		return 0;
 	if (path->rx_data_seq_valid)
 		lost = (seq - path->rx_data_seq_next) &
 		       TBV_NATIVE_DATA_PATH_SEQ_MASK;

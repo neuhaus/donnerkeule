@@ -263,9 +263,6 @@ struct tbv_peer {
 	struct mutex dmabuf_control_lock;
 	struct tbv_control *dmabuf_control;
 	bool dmabuf_control_dead;
-	bool remote_control_ring;
-	bool remote_push_done;
-	bool remote_dmabuf_credit;
 	u32 native_qp_rr_rail_id;
 	u32 nr_rails;
 	/*
@@ -321,13 +318,7 @@ struct tbv_state {
 	bool verbs_registered;
 	bool native_control_registered;
 	bool native_control_source_aware;
-	/*
-	 * Native control messages name their source link and host, so links
-	 * are told apart even by a source-blind XDomain handler.
-	 */
-	bool native_control_ids;
 	u8 native_host_id[16];
-	bool native_legacy_multicable_warned;
 	struct workqueue_struct *workqueue;
 	struct notifier_block ibdev_netdev_nb;
 	atomic_t verbs_ucontexts;
@@ -337,7 +328,6 @@ struct tbv_state {
 	atomic_t verbs_mrs;
 	atomic_t verbs_recv_wqes;
 	TBV_STATE_COUNTERS(TBV_COUNTER_DECL)
-	atomic64_t native_legacy_ambiguous_limited;
 	struct xarray verbs_mrs_xa;
 	struct xarray verbs_qps_xa;
 	/*

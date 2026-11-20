@@ -24,21 +24,14 @@ typedef uint64_t tbv_wire_u64;
 
 #define TBV_NATIVE_WIRE_MAGIC		0x31564254u /* "TBV1" little-endian */
 /*
- * Version 2 appends the sender's USB4 domain and host identity to the HELLO
- * payload. Version 1 messages are still parsed (without them); peers that
- * only speak version 1 do not accept version 2 messages.
+ * Protocol revision number carried in every HELLO/READY header. Both hosts
+ * must run the same revision; bump on any wire or semantic change.
  */
-#define TBV_NATIVE_WIRE_VERSION		2u
-#define TBV_NATIVE_WIRE_VERSION_V1	1u
+#define TBV_NATIVE_WIRE_VERSION		3u
 #define TBV_NATIVE_WIRE_XDOMAIN_HDR_SIZE 32u
 #define TBV_NATIVE_WIRE_HDR_SIZE	16u
 #define TBV_NATIVE_WIRE_ID_SIZE		16u
-#define TBV_NATIVE_WIRE_HELLO_SIZE_V1	40u
-#define TBV_NATIVE_WIRE_HELLO_SIZE \
-	(TBV_NATIVE_WIRE_HELLO_SIZE_V1 + 2u * TBV_NATIVE_WIRE_ID_SIZE)
-#define TBV_NATIVE_WIRE_HELLO_MSG_SIZE_V1 \
-	(TBV_NATIVE_WIRE_XDOMAIN_HDR_SIZE + TBV_NATIVE_WIRE_HDR_SIZE + \
-	 TBV_NATIVE_WIRE_HELLO_SIZE_V1)
+#define TBV_NATIVE_WIRE_HELLO_SIZE	(40u + 2u * TBV_NATIVE_WIRE_ID_SIZE)
 #define TBV_NATIVE_WIRE_HELLO_MSG_SIZE \
 	(TBV_NATIVE_WIRE_XDOMAIN_HDR_SIZE + TBV_NATIVE_WIRE_HDR_SIZE + \
 	 TBV_NATIVE_WIRE_HELLO_SIZE)
@@ -59,17 +52,8 @@ enum tbv_native_wire_cap {
 	TBV_NATIVE_WIRE_CAP_UC = 1u << 0,
 	TBV_NATIVE_WIRE_CAP_RC = 1u << 1,
 	TBV_NATIVE_WIRE_CAP_MULTI_RAIL = 1u << 2,
-	/* Retired exclusive raw DMA-BUF pool mode (gpu_direct=1). Never sent;
-	 * a peer that advertises it is an older module in that mode and is
-	 * rejected. Do not reuse the bit. */
-	TBV_NATIVE_WIRE_CAP_GPU_DIRECT = 1u << 3,
 	/* Verbs-owned descriptor transport and kernel USB4 rendezvous. */
 	TBV_NATIVE_WIRE_CAP_DMABUF_VERBS = 1u << 4,
-	TBV_NATIVE_WIRE_CAP_CONTROL_RING = 1u << 5,
-	/* Pushed descriptor DONE on the existing configuration channel. */
-	TBV_NATIVE_WIRE_CAP_PUSH_DONE = 1u << 6,
-	/* Pre-armed GPU SEND receive credits; requires PUSH_DONE. */
-	TBV_NATIVE_WIRE_CAP_DMABUF_CREDIT = 1u << 7,
 };
 
 enum tbv_native_wire_path_flag {
@@ -80,6 +64,7 @@ enum tbv_native_wire_path_flag {
 struct tbv_native_wire_info {
 	tbv_wire_u16 op;
 	tbv_wire_u16 flags;
+	tbv_wire_u16 version;
 	tbv_wire_u8 xdomain_sequence;
 	tbv_wire_u32 seq;
 	tbv_wire_u64 route;
@@ -96,15 +81,14 @@ struct tbv_native_wire_hello {
 	tbv_wire_u32 rx_ring_size;
 	tbv_wire_u32 path_flags;
 	/*
-	 * Version 2 only (has_ids): the UUID of the sender's host router on
-	 * the link that carries the message, which is the receiver's remote
-	 * UUID of that link, and a per-boot identity of the sending host.
-	 * They name the link and the host even when the receiver's XDomain
-	 * protocol handler does not report which link a message came from.
+	 * Always present: the UUID of the sender's host router on the link
+	 * that carries the message, and a per-boot identity of the sending
+	 * host. They name the link and the host even when the receiver's
+	 * XDomain protocol handler does not report which link a message came
+	 * from.
 	 */
 	tbv_wire_u8 src_domain[TBV_NATIVE_WIRE_ID_SIZE];
 	tbv_wire_u8 host_id[TBV_NATIVE_WIRE_ID_SIZE];
-	tbv_wire_u8 has_ids;
 };
 
 static inline void tbv_wire_put_le16(tbv_wire_u8 *p, tbv_wire_u16 value)
@@ -237,21 +221,7 @@ tbv_native_wire_parse_hello(const void *buf, size_t size,
 	if (!p || !hello)
 		return -EINVAL;
 
-	if (size < TBV_NATIVE_WIRE_HELLO_MSG_SIZE_V1)
-		return -EINVAL;
-
-	length_sn = tbv_wire_get_le32(p + 8);
-	if ((length_sn & 0x3fu) == (TBV_NATIVE_WIRE_HELLO_MSG_SIZE - 12u) / 4u) {
-		msg_size = TBV_NATIVE_WIRE_HELLO_MSG_SIZE;
-		version = TBV_NATIVE_WIRE_VERSION;
-	} else if ((length_sn & 0x3fu) ==
-		   (TBV_NATIVE_WIRE_HELLO_MSG_SIZE_V1 - 12u) / 4u) {
-		msg_size = TBV_NATIVE_WIRE_HELLO_MSG_SIZE_V1;
-		version = TBV_NATIVE_WIRE_VERSION_V1;
-	} else {
-		return -EINVAL;
-	}
-	if (size < msg_size)
+	if (size < TBV_NATIVE_WIRE_XDOMAIN_HDR_SIZE + TBV_NATIVE_WIRE_HDR_SIZE)
 		return -EINVAL;
 
 	if (memcmp(p + 12, tbv_native_wire_uuid,
@@ -264,6 +234,7 @@ tbv_native_wire_parse_hello(const void *buf, size_t size,
 	    tbv_wire_get_le32(p + 28) != TBV_NATIVE_WIRE_OP_READY_ACK)
 		return -EINVAL;
 
+	length_sn = tbv_wire_get_le32(p + 8);
 	if (info) {
 		info->xdomain_sequence = (length_sn >> 27) & 0x3u;
 		info->route = ((tbv_wire_u64)tbv_wire_get_le32(p) << 32) |
@@ -275,7 +246,15 @@ tbv_native_wire_parse_hello(const void *buf, size_t size,
 	if (tbv_wire_get_le32(p) != TBV_NATIVE_WIRE_MAGIC)
 		return -EINVAL;
 
-	if (tbv_wire_get_le16(p + 4) != version)
+	version = tbv_wire_get_le16(p + 4);
+	if (info)
+		info->version = version;
+	if (version != TBV_NATIVE_WIRE_VERSION)
+		return -EPROTONOSUPPORT;
+
+	msg_size = TBV_NATIVE_WIRE_HELLO_MSG_SIZE;
+	if (size < msg_size ||
+	    (length_sn & 0x3fu) != (msg_size - 12u) / 4u)
 		return -EINVAL;
 
 	op = tbv_wire_get_le16(p + 6);
@@ -308,16 +287,9 @@ tbv_native_wire_parse_hello(const void *buf, size_t size,
 	hello->tx_ring_size = tbv_wire_get_le32(p + 28);
 	hello->rx_ring_size = tbv_wire_get_le32(p + 32);
 	hello->path_flags = tbv_wire_get_le32(p + 36);
-	if (version == TBV_NATIVE_WIRE_VERSION) {
-		memcpy(hello->src_domain, p + 40, TBV_NATIVE_WIRE_ID_SIZE);
-		memcpy(hello->host_id, p + 40 + TBV_NATIVE_WIRE_ID_SIZE,
-		       TBV_NATIVE_WIRE_ID_SIZE);
-		hello->has_ids = 1;
-	} else {
-		memset(hello->src_domain, 0, TBV_NATIVE_WIRE_ID_SIZE);
-		memset(hello->host_id, 0, TBV_NATIVE_WIRE_ID_SIZE);
-		hello->has_ids = 0;
-	}
+	memcpy(hello->src_domain, p + 40, TBV_NATIVE_WIRE_ID_SIZE);
+	memcpy(hello->host_id, p + 40 + TBV_NATIVE_WIRE_ID_SIZE,
+	       TBV_NATIVE_WIRE_ID_SIZE);
 
 	return 0;
 }

@@ -21,31 +21,24 @@ static int hello_equal(const struct tbv_native_wire_hello *a,
 	       !memcmp(a->host_id, b->host_id, sizeof(a->host_id));
 }
 
-/* A version 1 HELLO is a version 2 one without the trailing identities. */
-static int check_hello_v1(const unsigned char *v2, const struct tbv_native_wire_hello *hello)
+/* A mismatched protocol revision must be rejected with -EPROTONOSUPPORT
+ * and report the peer's revision in info->version. */
+static int check_hello_revision_mismatch(const unsigned char *v3)
 {
-	unsigned char v1[TBV_NATIVE_WIRE_HELLO_MSG_SIZE_V1];
+	unsigned char older[TBV_NATIVE_WIRE_HELLO_MSG_SIZE];
 	struct tbv_native_wire_hello parsed;
 	struct tbv_native_wire_info info;
-	unsigned int length_sn;
 
-	memcpy(v1, v2, sizeof(v1));
-	length_sn = (unsigned int)v1[8] | (unsigned int)v1[9] << 8 |
-		    (unsigned int)v1[10] << 16 | (unsigned int)v1[11] << 24;
-	length_sn = (length_sn & ~0x3fu) |
-		    (TBV_NATIVE_WIRE_HELLO_MSG_SIZE_V1 - 12u) / 4u;
-	tbv_wire_put_le32(v1 + 8, length_sn);
-	tbv_wire_put_le16(v1 + TBV_NATIVE_WIRE_XDOMAIN_HDR_SIZE + 4,
-			  TBV_NATIVE_WIRE_VERSION_V1);
-	tbv_wire_put_le16(v1 + TBV_NATIVE_WIRE_XDOMAIN_HDR_SIZE + 8,
-			  TBV_NATIVE_WIRE_HELLO_MSG_SIZE_V1);
+	memcpy(older, v3, sizeof(older));
+	tbv_wire_put_le16(older + TBV_NATIVE_WIRE_XDOMAIN_HDR_SIZE + 4,
+			  TBV_NATIVE_WIRE_VERSION - 1u);
 
-	memset(&parsed, 0xff, sizeof(parsed));
-	if (tbv_native_wire_parse_hello(v1, sizeof(v1), &parsed, &info))
+	memset(&parsed, 0, sizeof(parsed));
+	memset(&info, 0, sizeof(info));
+	if (tbv_native_wire_parse_hello(older, sizeof(older), &parsed, &info) !=
+	    -EPROTONOSUPPORT)
 		return -1;
-	if (parsed.has_ids || parsed.rail_id != hello->rail_id ||
-	    parsed.path_flags != hello->path_flags ||
-	    parsed.src_domain[0] || parsed.host_id[15])
+	if (info.version != TBV_NATIVE_WIRE_VERSION - 1u)
 		return -1;
 	return 0;
 }
@@ -260,7 +253,6 @@ int main(void)
 				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 		.host_id = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 			     16 },
-		.has_ids = 1,
 	};
 	struct tbv_native_wire_hello parsed_hello;
 	struct tbv_native_wire_info info;
@@ -291,12 +283,12 @@ int main(void)
 					  &parsed_hello, &info);
 	if (ret)
 		return 2;
-	if (!hello_equal(&hello, &parsed_hello) || !parsed_hello.has_ids)
+	if (!hello_equal(&hello, &parsed_hello))
 		return 3;
 	if (info.op != TBV_NATIVE_WIRE_OP_HELLO || info.seq != 123 ||
-	    info.xdomain_sequence != 2)
+	    info.xdomain_sequence != 2 || info.version != TBV_NATIVE_WIRE_VERSION)
 		return 4;
-	if (check_hello_v1(hello_buf, &hello))
+	if (check_hello_revision_mismatch(hello_buf))
 		return 30;
 
 	ret = tbv_native_data_build_header(data_buf, sizeof(data_buf), &hdr);

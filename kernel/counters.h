@@ -9,8 +9,8 @@
  * debugfs summary prints them. It is expanded into the struct tbv_state
  * members and into that printer, so a counter in this list cannot be added
  * to one and forgotten in the other, and the printed name is always the
- * field name. native_legacy_ambiguous_limited and the per-path counters are
- * outside the list and are declared and printed by hand.
+ * field name. The per-path counters are outside the list and are declared
+ * and printed by hand.
  *
  * Benchmark scripts parse the summary by name, so the order is not
  * load-bearing for them; keep it stable anyway. Renaming a counter changes

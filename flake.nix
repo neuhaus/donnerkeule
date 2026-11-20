@@ -458,6 +458,6 @@
 
       legacyPackages = forLinuxSystems (_pkgs: kernelPatchSets);
 
-      nixosModules.default = import ./module.nix { inherit self; };
+      nixosModules.default = import ./nixos-module.nix { inherit self; };
     };
 }

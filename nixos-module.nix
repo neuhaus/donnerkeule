@@ -526,7 +526,7 @@ in {
       }
       {
         assertion = !cfg.kernel.useProjectKernel || projectPackages ? linux-thunderbolt;
-        message = "hardware.thunderbolt-ibverbs.kernel.useProjectKernel requires importing module.nix from the thunderbolt-ibverbs flake.";
+        message = "hardware.thunderbolt-ibverbs.kernel.useProjectKernel requires importing nixos-module.nix from the thunderbolt-ibverbs flake.";
       }
     ];
 

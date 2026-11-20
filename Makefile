@@ -10,7 +10,7 @@ KERNEL_DIR ?= kernel
 DKMS_PACKAGE_NAME = $(shell awk -F '"' '/^PACKAGE_NAME=/ { print $$2; exit }' dkms.conf)
 DKMS_PACKAGE_VERSION = $(shell awk -F '"' '/^PACKAGE_VERSION=/ { print $$2; exit }' dkms.conf)
 
-.PHONY: all clean modules modules_install help dkms-add dkms-build dkms-install dkms-remove
+.PHONY: all clean modules modules_install help dkms-add dkms-build dkms-install dkms-remove dkms-version
 
 all: modules
 
@@ -31,6 +31,13 @@ help:
 	@echo "  dkms-build        Build with DKMS for KVER=$$(uname -r)"
 	@echo "  dkms-install      Install with DKMS for KVER=$$(uname -r)"
 	@echo "  dkms-remove       Remove this DKMS module version"
+	@echo "  dkms-version      Update dkms.conf PACKAGE_VERSION from git describe"
+
+dkms-version:
+	@ver=$$(git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' | tr '-' '.'); \
+	[ -n "$$ver" ] || { echo "git describe failed" >&2; exit 1; }; \
+	sed -i.bak "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=\"$$ver\"/" dkms.conf && rm -f dkms.conf.bak; \
+	echo "PACKAGE_VERSION=\"$$ver\""
 
 dkms-add:
 	dkms add .

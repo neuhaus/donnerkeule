@@ -10,7 +10,6 @@ source = source.replace('#include "path-helpers.c"', functions(path, [
     'tbv_path_enqueue_data', 'tbv_path_enqueue_reserved_data_list',
     'tbv_path_reserve_data', 'tbv_path_release_data_reservation']))
 source = source.replace('#include "ibdev-helpers.c"', functions(ibdev, [
-    'tbv_release_path_reservations', 'tbv_reserve_path_frames',
     'tbv_native_send_build_block', 'tbv_send_build_needless',
     'tbv_native_send_run_build_job']))
 run_c('native-build-backpressure', source)

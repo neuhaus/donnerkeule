@@ -63,13 +63,16 @@ static void tbv_send_retire_frames(struct tbv_send_ctx *s, u32 n, int status)
 /* Model of the production chunk builder: reserve, then enqueue the chunk. */
 static int tbv_native_send_build_chunk(struct tbv_send_ctx *ctx,
 				       struct tbv_path *path, u32 first_frag,
-				       u32 nfrags)
+				       u32 frag_stride, u32 nfrags,
+				       bool block_striping)
 {
 	struct tbv_tx_packet *packets = calloc(nfrags, sizeof(*packets));
 	struct list_head list = LIST_HEAD_INIT(list);
 	int ret = tbv_path_reserve_data(path, nfrags);
 	u32 i;
 
+	(void)frag_stride;
+	(void)block_striping;
 	if (ret == -ENOMEM) {
 		free(packets);
 		return -EAGAIN;
@@ -111,10 +114,7 @@ int main(void)
 	struct tbv_state owner = {0};
 	struct tbv_qp qp = { .owner = &owner };
 	struct tbv_send_ctx ctx = { .tqp = &qp };
-	struct tbv_path p = new_path(10), a = new_path(100), b = new_path(5),
-			c = new_path(100);
-	struct tbv_path *paths[] = { &a, &b, &c };
-	u32 reservations[] = { 10, 10, 10 };
+	struct tbv_path p = new_path(10), a = new_path(100);
 	struct tbv_send_build_job job;
 	struct list_head list = LIST_HEAD_INIT(list);
 	struct tbv_tx_packet four[4] = {0};
@@ -140,19 +140,6 @@ int main(void)
 		   !tbv_path_enqueue_data(&p, &single, TBV_PATH_SEND_DEFER |
 					  TBV_PATH_SEND_RESERVED) &&
 		   p.tx_data_reserved == 0, "reserved single frame"))
-		return 1;
-
-	/* A failed multi-path reservation gives back only what it reserved. */
-	b.tx_data_queued = 5;
-	if (expect(tbv_reserve_path_frames(paths, reservations, 3) == -ENOMEM &&
-		   reservations[0] == 10 && !reservations[1] && !reservations[2] &&
-		   a.tx_data_reserved == 10 && !c.tx_data_reserved,
-		   "failed reservation left planned counts"))
-		return 1;
-	c.tx_data_reserved = 7;	/* another sender's reservation */
-	tbv_release_path_reservations(paths, reservations, 3);
-	if (expect(!a.tx_data_reserved && c.tx_data_reserved == 7,
-		   "release took another sender's reservation"))
 		return 1;
 
 	/* A full queue defers the block; it resumes in order, nothing dropped. */

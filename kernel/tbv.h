@@ -15,6 +15,7 @@
 #include <linux/refcount.h>
 #include <linux/sizes.h>
 #include <linux/spinlock.h>
+#include <linux/thunderbolt.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
 #include <linux/workqueue.h>
@@ -87,17 +88,29 @@ struct tbv_path_config {
 	bool e2e;
 };
 
-struct tbv_path_owned_frame {
+typedef void (*tbv_path_tx_done_fn)(void *ctx, int status);
+
+struct tbv_path;
+struct tbv_tx_packet;
+
+struct tbv_data_frame {
+	struct ring_frame frame;
+	struct tbv_path *path;
 	struct list_head node;
-	void *data;
+	void *buf;
+	dma_addr_t dma;
+	struct tbv_tx_packet *packet;
+	tbv_path_tx_done_fn done;
+	void *done_ctx;
+	void *owner_ctx;
 	u32 len;
+	u32 start_credit_group_frames;
 	u8 sof;
 	u8 eof;
+	bool tx;
+	bool queued;
+	bool inflight;
 };
-
-struct tb_nhi;
-struct tb_ring;
-struct ring_frame;
 
 struct tbv_ring_ops {
 	struct tb_ring *(*alloc_tx)(struct tb_nhi *nhi, int hop, int size,
@@ -142,7 +155,9 @@ struct tbv_path {
 	u32 tx_control_packet_count;
 	u32 tx_control_queued;
 	u32 tx_data_queued;
-	u32 tx_data_reserved;
+	u32 tx_zcopy_queued;
+	u32 tx_claimed;
+	u32 tx_free_count;
 	u32 tx_data_queue_limit;
 	u32 tx_remote_data_credits;
 	u32 tx_remote_data_credit_max;
@@ -156,6 +171,7 @@ struct tbv_path {
 	struct list_head tx_control_free;
 	struct list_head tx_control_queue;
 	struct list_head tx_data_queue;
+	struct list_head tx_zcopy_queue;
 	struct list_head tx_zcopy_inflight;
 	struct delayed_work tx_poll_work;
 	struct delayed_work rx_supp_poll_work;
@@ -394,26 +410,17 @@ struct tbv_service_config {
 };
 
 struct tb_property_dir;
-struct tbv_data_frame;
 struct tbv_native_data_header;
-struct tbv_tx_packet;
 struct device;
 struct page;
 struct tb_ring;
 struct tb_xdomain;
-typedef void (*tbv_path_tx_done_fn)(void *ctx, int status);
 typedef int (*tbv_path_next_page_fn)(void *ctx, struct page **page,
 				     u32 *page_off, u32 *length,
 				     tbv_path_tx_done_fn *done,
 				     void **done_ctx);
 #define TBV_PATH_SEND_CONTROL	BIT(0)
 #define TBV_PATH_SEND_DEFER	BIT(1)
-/*
- * The caller reserved queue room with tbv_path_reserve_data() and this frame
- * uses one frame of it. Without it a frame never takes another sender's
- * reservation.
- */
-#define TBV_PATH_SEND_RESERVED	BIT(2)
 extern const uuid_t tbv_native_service_uuid;
 
 int tbv_config_parse(struct tbv_config *cfg, const char *compat,
@@ -486,8 +493,13 @@ int tbv_path_enable_tunnel(struct tbv_path *path, struct tb_xdomain *xd,
 int tbv_path_disable_tunnel(struct tbv_path *path, struct tb_xdomain *xd);
 void tbv_path_set_remote_rx_capacity(struct tbv_path *path, u32 rx_ring_size);
 void tbv_path_add_remote_rx_credits(struct tbv_path *path, u32 credits);
-int tbv_path_reserve_data(struct tbv_path *path, u32 frames);
-void tbv_path_release_data_reservation(struct tbv_path *path, u32 frames);
+int tbv_path_claim_tx_frames(struct tbv_path *path, u32 frames,
+			     struct list_head *list);
+void tbv_path_release_tx_frames(struct tbv_path *path,
+				struct list_head *list);
+int tbv_path_enqueue_tx_frames(struct tbv_path *path,
+			       struct list_head *list, u32 count,
+			       unsigned int flags);
 void tbv_ibdev_path_build_work(struct work_struct *work);
 int tbv_path_send(struct tbv_path *path, const void *data, u32 len,
 		  unsigned int flags,
@@ -498,19 +510,6 @@ int tbv_path_send_owned(struct tbv_path *path, void *data, u32 len,
 int tbv_path_send_marked_owned(struct tbv_path *path, void *data, u32 len,
 			       u8 sof, u8 eof, unsigned int flags,
 			       tbv_path_tx_done_fn done, void *done_ctx);
-int tbv_path_prepare_owned_list(struct tbv_path *path,
-				struct list_head *frames,
-				struct list_head *packets,
-				u32 *packet_count,
-				unsigned int flags,
-				tbv_path_tx_done_fn done,
-				void *done_ctx);
-int tbv_path_enqueue_prepared_reserved(struct tbv_path *path,
-				       struct list_head *packets,
-				       u32 packet_count,
-				       unsigned int flags);
-void tbv_path_release_prepared_list_silent(struct list_head *packets,
-					   int status);
 int tbv_path_send_page_stream(struct tbv_path *path,
 			      const struct tbv_native_data_header *hdr,
 			      u32 total_length, unsigned int flags,

@@ -1829,7 +1829,7 @@ static void tbv_native_control_path_score(struct tbv_path *path,
 			  atomic64_read(&path->control_tx_completed);
 
 	spin_lock_irqsave(&path->tx_lock, flags);
-	reserved = path->tx_data_reserved;
+	reserved = path->tx_claimed;
 	spin_unlock_irqrestore(&path->tx_lock, flags);
 
 	if (data_pending < 0)
@@ -1965,24 +1965,6 @@ static void tbv_kick_paths(struct tbv_path **paths, u32 path_count)
 
 	for (i = 0; i < path_count; i++)
 		tbv_path_kick_tx(paths[i]);
-}
-
-static void tbv_release_owned_frame_lists(struct list_head *lists, u32 count)
-{
-	u32 i;
-
-	for (i = 0; i < count; i++) {
-		while (!list_empty(&lists[i])) {
-			struct tbv_path_owned_frame *frame =
-				list_first_entry(&lists[i],
-						 struct tbv_path_owned_frame,
-						 node);
-
-			list_del_init(&frame->node);
-			kfree(frame->data);
-			kfree(frame);
-		}
-	}
 }
 
 static bool tbv_ibdev_port_active(struct tbv_ibdev *dev)
@@ -3860,7 +3842,9 @@ struct tbv_send_build_job {
 	struct tbv_send_ctx *send;
 	struct tbv_path *path;
 	u32 first_frag;
+	u32 frag_stride;
 	u32 nfrags;
+	bool block_striping;
 };
 
 /* Frames a block is built and queued in, so sending starts while it builds. */
@@ -3868,8 +3852,9 @@ struct tbv_send_build_job {
 
 /*
  * Builds @nfrags frames of a native send starting at @first_frag with step
- * @frag_stride and queues them on @path. The send's tx_pending already counts
- * them; on failure the caller takes them back out.
+ * @frag_stride directly into claimed TX staging frames and queues them on
+ * @path. The send's tx_pending already counts them; on failure the caller
+ * takes them back out.
  */
 static int tbv_native_send_build_chunk(struct tbv_send_ctx *ctx,
 				       struct tbv_path *path, u32 first_frag,
@@ -3878,90 +3863,61 @@ static int tbv_native_send_build_chunk(struct tbv_send_ctx *ctx,
 {
 	struct tbv_qp *tqp = ctx->tqp;
 	struct tbv_native_data_header hdr;
+	struct tbv_data_frame *f;
 	LIST_HEAD(frames);
-	LIST_HEAD(packets);
-	u32 packet_count = 0;
-	u32 refs = 0;
-	u32 i;
+	u32 i = 0;
 	int ret;
 
-	ret = tbv_path_reserve_data(path, nfrags);
+	ret = tbv_path_claim_tx_frames(path, nfrags, &frames);
 	if (ret == -ENOMEM)
-		return -EAGAIN;	/* the path's queue is full for now */
+		return -EAGAIN;	/* not enough free staging frames right now */
 	if (ret) {
 		atomic64_inc(&tqp->owner->data_wr_no_path);
 		return ret;
 	}
 
-	for (i = 0; i < nfrags; i++) {
+	list_for_each_entry(f, &frames, node) {
 		u32 frag_idx = first_frag + i * frag_stride;
 		u32 offset = frag_idx * TBV_NATIVE_DATA_MAX_PAYLOAD;
 		u32 payload_len = min_t(u32, ctx->total_len - offset,
 					TBV_NATIVE_DATA_MAX_PAYLOAD);
 		bool last = offset + payload_len == ctx->total_len;
 		u32 packet_len = TBV_NATIVE_DATA_HDR_SIZE + payload_len;
-		struct tbv_path_owned_frame *owned;
-		u8 *frame;
 
-		frame = kmalloc(packet_len, GFP_KERNEL);
-		if (!frame) {
-			ret = -ENOMEM;
-			goto err_frames;
-		}
 		ret = tbv_copy_send_range(ctx->segs, ctx->nsegs, offset,
-					  frame + TBV_NATIVE_DATA_HDR_SIZE,
+					  (u8 *)f->buf +
+					  TBV_NATIVE_DATA_HDR_SIZE,
 					  payload_len);
 		if (ret) {
-			kfree(frame);
 			atomic64_inc(&tqp->owner->data_wr_copy_error);
 			goto err_frames;
 		}
 		tbv_send_ctx_build_native_header(ctx, offset, payload_len,
 						 last, block_striping, &hdr);
-		ret = tbv_native_data_build_header(frame, packet_len, &hdr);
-		if (ret < 0) {
-			kfree(frame);
+		ret = tbv_native_data_build_header(f->buf, packet_len, &hdr);
+		if (ret < 0)
 			goto err_frames;
-		}
-		owned = kzalloc(sizeof(*owned), GFP_KERNEL);
-		if (!owned) {
-			kfree(frame);
-			ret = -ENOMEM;
-			goto err_frames;
-		}
-		INIT_LIST_HEAD(&owned->node);
-		owned->data = frame;
-		owned->len = packet_len;
-		owned->sof = TBV_DATA_PDF_FRAME_START;
-		owned->eof = TBV_DATA_PDF_FRAME_END;
-		list_add_tail(&owned->node, &frames);
+
+		f->len = packet_len;
+		f->sof = TBV_DATA_PDF_FRAME_START;
+		f->eof = TBV_DATA_PDF_FRAME_END;
+		f->done = tbv_send_tx_done;
+		f->done_ctx = ctx;
+		f->owner_ctx = ctx;
+		i++;
 	}
 
-	ret = tbv_path_prepare_owned_list(path, &frames, &packets,
-					  &packet_count, TBV_PATH_SEND_DEFER,
-					  tbv_send_tx_done, ctx);
-	if (ret) {
-		atomic64_inc(&tqp->owner->data_wr_path_send_error);
-		goto err_frames;
-	}
-	if (packet_count != nfrags)
-		atomic_add((int)packet_count - (int)nfrags, &ctx->tx_pending);
-	for (refs = 0; refs < packet_count; refs++) {
+	for (i = 0; i < nfrags; i++) {
 		tbv_send_ctx_get(ctx);
 		atomic64_inc(&tqp->owner->data_wr_path_send);
 	}
 
-	ret = tbv_path_enqueue_prepared_reserved(path, &packets, packet_count,
-						 TBV_PATH_SEND_DEFER);
+	ret = tbv_path_enqueue_tx_frames(path, &frames, nfrags,
+					 TBV_PATH_SEND_DEFER);
 	if (ret) {
-		/* The failed enqueue released the packets without callbacks. */
+		/* The failed enqueue returned the frames without callbacks. */
 		atomic64_inc(&tqp->owner->data_wr_path_send_error);
-		tbv_path_release_data_reservation(path, nfrags);
-		/* The caller takes out nfrags; take out the difference. */
-		if (packet_count != nfrags)
-			atomic_sub((int)packet_count - (int)nfrags,
-				   &ctx->tx_pending);
-		while (refs--)
+		for (i = 0; i < nfrags; i++)
 			tbv_send_ctx_put(ctx);
 		return ret;
 	}
@@ -3969,19 +3925,20 @@ static int tbv_native_send_build_chunk(struct tbv_send_ctx *ctx,
 	return 0;
 
 err_frames:
-	tbv_release_owned_frame_lists(&frames, 1);
-	tbv_path_release_data_reservation(path, nfrags);
+	tbv_path_release_tx_frames(path, &frames);
 	return ret;
 }
 
 /*
  * Builds and queues a block in chunks of TBV_SEND_BUILD_CHUNK frames and
  * stores in @done how many frames were queued. Returns -EAGAIN when the
- * path's data queue is full, so the caller can resume once it drains.
+ * path has too few free staging frames, so the caller can resume once they
+ * drain.
  */
 static int tbv_native_send_build_block(struct tbv_send_ctx *ctx,
 				       struct tbv_path *path, u32 first_frag,
-				       u32 nfrags, u32 *done)
+				       u32 frag_stride, u32 nfrags,
+				       bool block_striping, u32 *done)
 {
 	int ret;
 
@@ -3990,8 +3947,10 @@ static int tbv_native_send_build_block(struct tbv_send_ctx *ctx,
 		u32 n = min_t(u32, nfrags - *done, TBV_SEND_BUILD_CHUNK);
 
 		ret = tbv_native_send_build_chunk(ctx, path,
-						  first_frag + *done, 1, n,
-						  true);
+						  first_frag +
+						  *done * frag_stride,
+						  frag_stride, n,
+						  block_striping);
 		if (ret)
 			return ret;
 		*done += n;
@@ -4009,21 +3968,23 @@ static bool tbv_send_build_needless(struct tbv_send_ctx *ctx)
 }
 
 /*
- * Returns true when the path's data queue is full: the job then keeps its
- * remaining frames and is resumed later, in order.
+ * Returns true when the path's staging frames are exhausted: the job then
+ * keeps its remaining frames and is resumed later, in order.
  */
 static bool tbv_native_send_run_build_job(struct tbv_send_build_job *job)
 {
 	struct tbv_send_ctx *ctx = job->send;
+	u32 stride = job->frag_stride ? job->frag_stride : 1;
 	u32 done = 0;
 	int ret = -ECANCELED;
 
 	if (!tbv_send_build_needless(ctx))
 		ret = tbv_native_send_build_block(ctx, job->path,
-						  job->first_frag,
-						  job->nfrags, &done);
+						  job->first_frag, stride,
+						  job->nfrags,
+						  job->block_striping, &done);
 	if (ret == -EAGAIN) {
-		job->first_frag += done;
+		job->first_frag += done * stride;
 		job->nfrags -= done;
 		atomic64_inc(&ctx->tqp->owner->data_wr_block_deferred);
 		return true;
@@ -4102,7 +4063,9 @@ void tbv_ibdev_path_build_work(struct work_struct *work)
  */
 static void tbv_native_send_queue_blocks(struct tbv_send_ctx *ctx,
 					 struct tbv_path **paths,
-					 u32 path_count, u32 nfrags)
+					 u32 path_count, u32 nfrags,
+					 bool fragment_striping,
+					 bool block_striping)
 {
 	struct tbv_qp *tqp = ctx->tqp;
 	u32 p;
@@ -4110,12 +4073,26 @@ static void tbv_native_send_queue_blocks(struct tbv_send_ctx *ctx,
 	/* Count every frame up front so the send cannot drain early. */
 	atomic_add(nfrags, &ctx->tx_pending);
 	for (p = 0; p < path_count; p++) {
-		u32 first = DIV_ROUND_UP(p * nfrags, path_count);
-		u32 end = DIV_ROUND_UP((p + 1) * nfrags, path_count);
 		struct tbv_send_build_job *job;
 		unsigned long flags;
+		u32 first;
+		u32 stride;
+		u32 count;
 
-		if (end == first) {
+		if (fragment_striping) {
+			first = (p + path_count - (ctx->psn % path_count)) %
+				path_count;
+			stride = path_count;
+			count = first < nfrags ?
+				1 + (nfrags - 1 - first) / path_count : 0;
+		} else {
+			u32 end = DIV_ROUND_UP((p + 1) * nfrags, path_count);
+
+			first = DIV_ROUND_UP(p * nfrags, path_count);
+			stride = 1;
+			count = end - first;
+		}
+		if (!count) {
 			tbv_release_path_refs(&paths[p], 1);
 			continue;
 		}
@@ -4124,9 +4101,9 @@ static void tbv_native_send_queue_blocks(struct tbv_send_ctx *ctx,
 			u32 done = 0;
 
 			if (tbv_native_send_build_block(ctx, paths[p], first,
-							end - first, &done))
-				tbv_send_retire_frames(ctx, end - first - done,
-						       0);
+							stride, count,
+							block_striping, &done))
+				tbv_send_retire_frames(ctx, count - done, 0);
 			tbv_release_path_refs(&paths[p], 1);
 			continue;
 		}
@@ -4134,7 +4111,9 @@ static void tbv_native_send_queue_blocks(struct tbv_send_ctx *ctx,
 		job->send = ctx;
 		job->path = paths[p];
 		job->first_frag = first;
-		job->nfrags = end - first;
+		job->frag_stride = stride;
+		job->nfrags = count;
+		job->block_striping = block_striping;
 		spin_lock_irqsave(&paths[p]->build_lock, flags);
 		list_add_tail(&job->node, &paths[p]->build_jobs);
 		spin_unlock_irqrestore(&paths[p]->build_lock, flags);
@@ -4269,15 +4248,11 @@ static int tbv_native_send_ctx_post_frames(struct tbv_send_ctx *ctx,
 			tqp, paths, ARRAY_SIZE(paths));
 		if (path_count > 1 && reason == TBV_SEND_POST_INITIAL) {
 			atomic64_inc(&tqp->owner->data_wr_block_split);
-			/*
-			 * Let the paths' build work build the blocks in
-			 * parallel, so the poster does not wait for them. A
-			 * retransmission is rare and builds here.
-			 */
 			if (ctx->retryable) {
 				mutex_unlock(&tqp->owner->lock);
 				tbv_native_send_queue_blocks(ctx, paths,
-							     path_count, nfrags);
+							     path_count, nfrags,
+							     false, true);
 				return 0;
 			}
 		}
@@ -4292,6 +4267,16 @@ static int tbv_native_send_ctx_post_frames(struct tbv_send_ctx *ctx,
 	if (!path_count) {
 		atomic64_inc(&tqp->owner->data_wr_no_path);
 		return -ENOTCONN;
+	}
+
+	/*
+	 * Sends larger than one build chunk may exceed a path's free staging
+	 * frames; hand them to the build workers so they drain in chunks.
+	 */
+	if (nfrags > TBV_SEND_BUILD_CHUNK && ctx->retryable) {
+		tbv_native_send_queue_blocks(ctx, paths, path_count, nfrags,
+					     fragment_striping, block_striping);
+		return 0;
 	}
 
 	atomic_add(nfrags, &ctx->tx_pending);
@@ -7339,66 +7324,70 @@ static int tbv_send_read_response_ctx(struct tbv_read_resp_ctx *ctx)
 	if (!path)
 		return -ENOTCONN;
 
-	ret = tbv_path_reserve_data(path, nfrags);
-	if (ret)
-		goto out_put_path;
+	while (remaining) {
+		u32 chunk_frags = min_t(u32, remaining, TBV_SEND_BUILD_CHUNK);
+		struct tbv_data_frame *f;
+		LIST_HEAD(frames);
+		u32 wait_tries = 0;
 
-	do {
-		struct tbv_native_data_header resp = {};
-		u32 payload_len = min_t(u32, total_len - offset,
-					TBV_NATIVE_DATA_MAX_PAYLOAD);
-		u32 packet_len = TBV_NATIVE_DATA_HDR_SIZE + payload_len;
-		bool last = offset + payload_len == total_len;
-		u8 *frame;
-		int len;
-
-		frame = kmalloc(packet_len, GFP_KERNEL);
-		if (!frame) {
-			ret = -ENOMEM;
-			goto out_release_reservation;
+		for (;;) {
+			ret = tbv_path_claim_tx_frames(path, chunk_frags,
+						       &frames);
+			if (ret != -ENOMEM || !sent_any || ++wait_tries > 200)
+				break;
+			tbv_path_kick_tx(path);
+			usleep_range(50, 150);
 		}
+		if (ret)
+			goto out_put_path;
+
+		list_for_each_entry(f, &frames, node) {
+			struct tbv_native_data_header resp = {};
+			u32 payload_len = min_t(u32, total_len - offset,
+						TBV_NATIVE_DATA_MAX_PAYLOAD);
+			u32 packet_len = TBV_NATIVE_DATA_HDR_SIZE + payload_len;
+			bool last = offset + payload_len == total_len;
+			int len;
 
 			if (payload_len)
-				memcpy(frame + TBV_NATIVE_DATA_HDR_SIZE,
+				memcpy((u8 *)f->buf + TBV_NATIVE_DATA_HDR_SIZE,
 				       (u8 *)ctx->data + offset, payload_len);
 
-		resp.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_RESP;
-		resp.flags = last ? TBV_NATIVE_DATA_F_LAST : 0;
-		resp.dest_qp = req->src_qp;
-		resp.src_qp = req->dest_qp;
+			resp.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_RESP;
+			resp.flags = last ? TBV_NATIVE_DATA_F_LAST : 0;
+			resp.dest_qp = req->src_qp;
+			resp.src_qp = req->dest_qp;
 			resp.psn = req->psn;
 			resp.length = payload_len;
 			resp.imm_data = total_len;
 			resp.remote_addr = 0;
 			resp.frag_offset = offset;
 
-		len = tbv_native_data_build_header(frame, packet_len, &resp);
-		if (len < 0) {
-			kfree(frame);
-			ret = len;
-			goto out_release_reservation;
+			len = tbv_native_data_build_header(f->buf, packet_len,
+							   &resp);
+			if (len < 0) {
+				tbv_path_release_tx_frames(path, &frames);
+				ret = len;
+				goto out_put_path;
+			}
+			f->len = packet_len;
+			f->sof = TBV_DATA_PDF_FRAME_START;
+			f->eof = TBV_DATA_PDF_FRAME_END;
+			offset += payload_len;
 		}
 
-		ret = tbv_path_send_owned(path, frame, packet_len,
-					  TBV_PATH_SEND_DEFER |
-					  TBV_PATH_SEND_RESERVED, NULL, NULL);
+		ret = tbv_path_enqueue_tx_frames(path, &frames, chunk_frags, 0);
 		if (ret)
-			goto out_release_reservation;
+			goto out_put_path;
 
-		remaining--;
+		remaining -= chunk_frags;
 		sent_any = true;
-		offset += payload_len;
-	} while (offset < total_len);
+	}
 
-	tbv_path_kick_tx(path);
 	if (selected_ref)
 		tbv_release_path_refs(&path, 1);
 	return 0;
 
-out_release_reservation:
-	tbv_path_release_data_reservation(path, remaining);
-	if (sent_any)
-		tbv_path_kick_tx(path);
 out_put_path:
 	if (selected_ref)
 		tbv_release_path_refs(&path, 1);

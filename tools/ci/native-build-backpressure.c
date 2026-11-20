@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Path TX reservations and the block build work, with the production
- * functions: a full path queue defers a block instead of dropping its
- * frames, an unreserved frame never takes another sender's reservation, and
- * a failed multi-path reservation gives back only what it reserved.
+ * Path TX staging-frame claims and block build work, with the production
+ * functions: claims respect the control reserve, released frames return to
+ * tx_free, and a full path defers a block in order without dropping frames.
  */
 #include <errno.h>
 #include <stdbool.h>
@@ -11,25 +10,34 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-typedef uint32_t u32; typedef uint64_t u64;
+typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
 typedef long long atomic64_t;
 #define atomic64_inc(p) (++*(p))
+#define atomic64_add(v, p) (*(p) += (v))
 #define READ_ONCE(x) (x)
 #define min_t(t, a, b) ((t)(a) < (t)(b) ? (t)(a) : (t)(b))
+#define clamp_t(t, v, lo, hi) \
+	((t)(v) < (t)(lo) ? (t)(lo) : ((t)(v) > (t)(hi) ? (t)(hi) : (t)(v)))
 #define BIT(n) (1u << (n))
 #define spin_lock_irqsave(l, f) ((void)(l), (void)(f))
 #define spin_unlock_irqrestore(l, f) ((void)(l), (void)(f))
 #define TBV_PATH_SEND_CONTROL BIT(0)
 #define TBV_PATH_SEND_DEFER BIT(1)
-#define TBV_PATH_SEND_RESERVED BIT(2)
+#define TBV_DATA_CREDIT_CONTROL_RESERVE 256u
+#define TBV_DATA_PDF_FRAME_START 1
+#define TBV_DATA_PDF_FRAME_END 3
 #define TBV_PATH_TUNNEL_ENABLED 2
 #define IB_QPS_ERR 6
 #define TBV_SEND_BUILD_CHUNK 64u
 #define container_of(p, t, m) ((t *)((char *)(p) - offsetof(t, m)))
 struct list_head { struct list_head *next, *prev; };
 #define LIST_HEAD_INIT(n) { &(n), &(n) }
+#define INIT_LIST_HEAD(p) do { (p)->next = (p); (p)->prev = (p); } while (0)
+static bool list_empty(const struct list_head *h) { return h->next == h; }
 static void list_add_tail(struct list_head *n, struct list_head *h)
 { n->next = h; n->prev = h->prev; h->prev->next = n; h->prev = n; }
+static void list_del_init(struct list_head *e)
+{ e->prev->next = e->next; e->next->prev = e->prev; INIT_LIST_HEAD(e); }
 static void list_splice_tail_init(struct list_head *l, struct list_head *h)
 {
 	if (l->next == l)
@@ -38,21 +46,46 @@ static void list_splice_tail_init(struct list_head *l, struct list_head *h)
 	l->prev->next = h; h->prev = l->prev;
 	l->next = l->prev = l;
 }
+#define list_first_entry(h, t, m) container_of((h)->next, t, m)
 #define list_for_each_entry(p, h, m) \
 	for (p = container_of((h)->next, __typeof__(*p), m); &p->m != (h); \
 	     p = container_of(p->m.next, __typeof__(*p), m))
+#define list_for_each_entry_safe(p, n, h, m) \
+	for (p = container_of((h)->next, __typeof__(*p), m), \
+	     n = container_of(p->m.next, __typeof__(*p), m); \
+	     &p->m != (h); \
+	     p = n, n = container_of(n->m.next, __typeof__(*n), m))
 
-struct tbv_tx_packet { struct list_head node; u32 start_credit_group_frames; bool queued; };
+struct tbv_tx_packet;
+typedef void (*tbv_path_tx_done_fn)(void *ctx, int status);
+struct tbv_data_frame {
+	struct list_head node;
+	struct tbv_tx_packet *packet;
+	tbv_path_tx_done_fn done;
+	void *done_ctx;
+	void *owner_ctx;
+	u32 len;
+	u32 start_credit_group_frames;
+	u8 sof;
+	u8 eof;
+	bool queued;
+	bool inflight;
+};
 struct tbv_path {
 	int tx_lock, state;
-	u32 tx_data_queued, tx_data_reserved, tx_data_queue_limit;
-	struct list_head tx_data_queue;
+	u32 tx_frame_count, tx_free_count, tx_claimed, tx_data_queued;
+	struct list_head tx_free, tx_data_queue;
 	atomic64_t data_tx_enqueued;
 };
 struct tbv_state { atomic64_t data_wr_block_deferred; };
 struct tbv_qp { struct tbv_state *owner; bool closing; int state; };
 struct tbv_send_ctx { struct tbv_qp *tqp; bool completed; u32 retired, next_frag; bool out_of_order; };
-struct tbv_send_build_job { struct tbv_send_ctx *send; struct tbv_path *path; u32 first_frag, nfrags; };
+struct tbv_send_build_job {
+	struct tbv_send_ctx *send;
+	struct tbv_path *path;
+	u32 first_frag, frag_stride, nfrags;
+	bool block_striping;
+};
 
 static void tbv_path_schedule_tx(struct tbv_path *path) { (void)path; }
 static void tbv_send_retire_frames(struct tbv_send_ctx *s, u32 n, int status)
@@ -60,45 +93,50 @@ static void tbv_send_retire_frames(struct tbv_send_ctx *s, u32 n, int status)
 
 #include "path-helpers.c"
 
-/* Model of the production chunk builder: reserve, then enqueue the chunk. */
+/* Model of the production chunk builder: claim staging frames, then enqueue. */
 static int tbv_native_send_build_chunk(struct tbv_send_ctx *ctx,
 				       struct tbv_path *path, u32 first_frag,
 				       u32 frag_stride, u32 nfrags,
 				       bool block_striping)
 {
-	struct tbv_tx_packet *packets = calloc(nfrags, sizeof(*packets));
 	struct list_head list = LIST_HEAD_INIT(list);
-	int ret = tbv_path_reserve_data(path, nfrags);
-	u32 i;
+	int ret = tbv_path_claim_tx_frames(path, nfrags, &list);
 
 	(void)frag_stride;
 	(void)block_striping;
-	if (ret == -ENOMEM) {
-		free(packets);
+	if (ret == -ENOMEM)
 		return -EAGAIN;
-	}
-	if (ret) {
-		free(packets);
+	if (ret)
 		return ret;
-	}
 	if (first_frag != ctx->next_frag)
 		ctx->out_of_order = true;
 	ctx->next_frag = first_frag + nfrags;
-	for (i = 0; i < nfrags; i++)
-		list_add_tail(&packets[i].node, &list);
-	ret = tbv_path_enqueue_reserved_data_list(path, &list, nfrags, true);
-	/* The harness only counts; the queue drains by resetting it below. */
-	path->tx_data_queue.next = path->tx_data_queue.prev = &path->tx_data_queue;
-	free(packets);
-	return ret;
+	return tbv_path_enqueue_tx_frames(path, &list, nfrags,
+					  TBV_PATH_SEND_DEFER);
 }
 
 #include "ibdev-helpers.c"
 
-static struct tbv_path new_path(u32 limit)
+static void init_path(struct tbv_path *p, struct tbv_data_frame *pool, u32 n)
 {
-	return (struct tbv_path){ .state = TBV_PATH_TUNNEL_ENABLED,
-				  .tx_data_queue_limit = limit };
+	u32 i;
+
+	*p = (struct tbv_path){ .state = TBV_PATH_TUNNEL_ENABLED,
+				.tx_frame_count = n,
+				.tx_free_count = n };
+	INIT_LIST_HEAD(&p->tx_free);
+	INIT_LIST_HEAD(&p->tx_data_queue);
+	for (i = 0; i < n; i++) {
+		pool[i] = (struct tbv_data_frame){0};
+		INIT_LIST_HEAD(&pool[i].node);
+		list_add_tail(&pool[i].node, &p->tx_free);
+	}
+}
+
+static void drain_path(struct tbv_path *p)
+{
+	tbv_path_return_tx_frames_locked(p, &p->tx_data_queue, false);
+	p->tx_data_queued = 0;
 }
 
 static int expect(bool ok, const char *what)
@@ -110,44 +148,38 @@ static int expect(bool ok, const char *what)
 
 int main(void)
 {
-	struct tbv_tx_packet single = {0};
 	struct tbv_state owner = {0};
 	struct tbv_qp qp = { .owner = &owner };
 	struct tbv_send_ctx ctx = { .tqp = &qp };
-	struct tbv_path p = new_path(10), a = new_path(100);
+	struct tbv_data_frame pool[160];
+	struct tbv_path p;
 	struct tbv_send_build_job job;
 	struct list_head list = LIST_HEAD_INIT(list);
-	struct tbv_tx_packet four[4] = {0};
-	int rounds = 0, i;
+	int rounds = 0;
 
-	/* An RX credit or ACK must not use a block's reservation. */
-	p.tx_data_queue = (struct list_head)LIST_HEAD_INIT(p.tx_data_queue);
-	if (expect(!tbv_path_reserve_data(&p, 4), "reserve"))
+	/* Control reserve: 16 frames => reserve = 4, max claimable = 12. */
+	init_path(&p, pool, 16);
+	if (expect(tbv_path_claim_tx_frames(&p, 13, &list) == -ENOMEM &&
+		   p.tx_free_count == 16 && p.tx_claimed == 0,
+		   "claim violated control reserve"))
 		return 1;
-	if (expect(!tbv_path_enqueue_data(&p, &single, TBV_PATH_SEND_DEFER) &&
-		   p.tx_data_reserved == 4 && p.tx_data_queued == 1,
-		   "unreserved frame took a reservation"))
+	if (expect(!tbv_path_claim_tx_frames(&p, 12, &list) &&
+		   p.tx_free_count == 4 && p.tx_claimed == 12,
+		   "claim up to control reserve failed"))
 		return 1;
-	for (i = 0; i < 4; i++)
-		list_add_tail(&four[i].node, &list);
-	if (expect(!tbv_path_enqueue_reserved_data_list(&p, &list, 4, true) &&
-		   p.tx_data_reserved == 0 && p.tx_data_queued == 5,
-		   "reserved block enqueue failed after an unreserved frame"))
-		return 1;
-	p.tx_data_queue = (struct list_head)LIST_HEAD_INIT(p.tx_data_queue);
-	single = (struct tbv_tx_packet){0};
-	if (expect(!tbv_path_reserve_data(&p, 1) &&
-		   !tbv_path_enqueue_data(&p, &single, TBV_PATH_SEND_DEFER |
-					  TBV_PATH_SEND_RESERVED) &&
-		   p.tx_data_reserved == 0, "reserved single frame"))
+	tbv_path_release_tx_frames(&p, &list);
+	if (expect(p.tx_free_count == 16 && p.tx_claimed == 0,
+		   "release did not restore tx_free_count"))
 		return 1;
 
-	/* A full queue defers the block; it resumes in order, nothing dropped. */
-	a = new_path(100);
-	a.tx_data_queue = (struct list_head)LIST_HEAD_INIT(a.tx_data_queue);
-	job = (struct tbv_send_build_job){ &ctx, &a, 0, 300 };
+	/*
+	 * A full staging ring defers the block; it resumes in order, nothing
+	 * dropped. 160 frames => reserve 40 => 120 claimable (1 chunk of 64).
+	 */
+	init_path(&p, pool, 160);
+	job = (struct tbv_send_build_job){ &ctx, &p, 0, 1, 300, true };
 	while (tbv_native_send_run_build_job(&job)) {
-		a.tx_data_queued = 0;	/* the ring sent the queue */
+		drain_path(&p);
 		if (expect(++rounds < 10, "deferred block never finished"))
 			return 1;
 	}
@@ -157,19 +189,19 @@ int main(void)
 		return 1;
 
 	/* A send that needs no more frames, or a path that is down, retires. */
+	drain_path(&p);
 	ctx = (struct tbv_send_ctx){ .tqp = &qp, .completed = true };
-	job = (struct tbv_send_build_job){ &ctx, &a, 0, 300 };
+	job = (struct tbv_send_build_job){ &ctx, &p, 0, 1, 300, true };
 	if (expect(!tbv_native_send_run_build_job(&job) && ctx.retired == 300,
 		   "completed send kept its frames"))
 		return 1;
 	ctx = (struct tbv_send_ctx){ .tqp = &qp };
-	a.tx_data_queued = 0;
-	a.state = 0;
-	job = (struct tbv_send_build_job){ &ctx, &a, 0, 300 };
+	p.state = 0;
+	job = (struct tbv_send_build_job){ &ctx, &p, 0, 1, 300, true };
 	if (expect(!tbv_native_send_run_build_job(&job) && ctx.retired == 300,
 		   "down path did not retire the block"))
 		return 1;
 
-	puts("Native block build: full queue defers in order, reservations stay with their owner");
+	puts("Native block build: staging claims respect control reserve, full ring defers in order");
 	return 0;
 }

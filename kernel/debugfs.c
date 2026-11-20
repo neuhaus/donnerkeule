@@ -159,13 +159,13 @@ static int tbv_debugfs_peers_show(struct seq_file *s, void *unused)
 				   rail->path.rx_data_credit_pending);
 			/* Why a path with queued frames is not sending. */
 			seq_printf(s,
-				   "    tx_pump data_queued=%u control_queued=%u reserved=%u inflight=%d frames=%u free=%zu remote_credits=%u scheduling=%u raw_stream=%u raw_inflight=%u\n",
+				   "    tx_pump data_queued=%u control_queued=%u reserved=%u inflight=%d frames=%u free=%u remote_credits=%u scheduling=%u raw_stream=%u raw_inflight=%u\n",
 				   rail->path.tx_data_queued,
 				   rail->path.tx_control_queued,
-				   rail->path.tx_data_reserved,
+				   rail->path.tx_claimed,
 				   atomic_read(&rail->path.tx_inflight),
 				   rail->path.tx_frame_count,
-				   list_count_nodes(&rail->path.tx_free),
+				   rail->path.tx_free_count,
 				   rail->path.tx_remote_data_credits,
 				   rail->path.tx_scheduling,
 				   rail->path.tx_raw_stream_active,

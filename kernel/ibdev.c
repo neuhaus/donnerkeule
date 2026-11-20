@@ -2984,6 +2984,26 @@ static void tbv_send_tx_done(void *ctx, int status)
 	tbv_send_ctx_put(send);
 }
 
+static void tbv_send_tx_done_batch(void *ctx, u32 frames, int status)
+{
+	struct tbv_send_ctx *send = ctx;
+
+	if (!frames)
+		return;
+	if (!status || tbv_send_is_completed(send)) {
+		tbv_send_retire_frames(send, frames, status);
+		while (frames--)
+			tbv_send_ctx_put(send);
+		return;
+	}
+	if (frames > 1) {
+		tbv_send_retire_frames(send, frames - 1, status);
+		while (--frames)
+			tbv_send_ctx_put(send);
+	}
+	tbv_send_tx_done(send, status);
+}
+
 static bool tbv_qp_timeout_reap_tx(struct tbv_qp *tqp,
 				   struct list_head *retry_sends,
 				   struct list_head *completed_sends,
@@ -3902,6 +3922,7 @@ static int tbv_native_send_build_chunk(struct tbv_send_ctx *ctx,
 		f->sof = TBV_DATA_PDF_FRAME_START;
 		f->eof = TBV_DATA_PDF_FRAME_END;
 		f->done = tbv_send_tx_done;
+		f->done_batch = tbv_send_tx_done_batch;
 		f->done_ctx = ctx;
 		f->owner_ctx = ctx;
 		i++;

@@ -58,10 +58,12 @@ static void list_splice_tail_init(struct list_head *l, struct list_head *h)
 
 struct tbv_tx_packet;
 typedef void (*tbv_path_tx_done_fn)(void *ctx, int status);
+typedef void (*tbv_path_tx_done_batch_fn)(void *ctx, u32 frames, int status);
 struct tbv_data_frame {
 	struct list_head node;
 	struct tbv_tx_packet *packet;
 	tbv_path_tx_done_fn done;
+	tbv_path_tx_done_batch_fn done_batch;
 	void *done_ctx;
 	void *owner_ctx;
 	u32 len;

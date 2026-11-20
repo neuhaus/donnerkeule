@@ -89,6 +89,7 @@ struct tbv_path_config {
 };
 
 typedef void (*tbv_path_tx_done_fn)(void *ctx, int status);
+typedef void (*tbv_path_tx_done_batch_fn)(void *ctx, u32 frames, int status);
 
 struct tbv_path;
 struct tbv_tx_packet;
@@ -101,6 +102,7 @@ struct tbv_data_frame {
 	dma_addr_t dma;
 	struct tbv_tx_packet *packet;
 	tbv_path_tx_done_fn done;
+	tbv_path_tx_done_batch_fn done_batch;
 	void *done_ctx;
 	void *owner_ctx;
 	u32 len;

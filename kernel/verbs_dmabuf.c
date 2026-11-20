@@ -3098,8 +3098,12 @@ int tbv_dmabuf_start(struct tbv_state *state)
 		pr_err("dmabuf_poll_control=1 requires dmabuf_poll_us>0\n");
 		return -EINVAL;
 	}
-	if (dmabuf_credits && (!tbv_control_push_enabled() || tbv_control_enabled())) {
-		pr_err("dmabuf_credits=1 requires dmabuf_push_done=1 and dmabuf_control_ring=0\n");
+	if (tbv_control_ring_requested()) {
+		pr_err("dmabuf_control_ring=1 was removed; use XDomain pushed DONE (dmabuf_control_ring=0)\n");
+		return -EOPNOTSUPP;
+	}
+	if (dmabuf_credits && !tbv_control_push_enabled()) {
+		pr_err("dmabuf_credits=1 requires dmabuf_push_done=1\n");
 		return -EINVAL;
 	}
 	/* Descriptor draining depends on Thunderbolt's ordinary ring workers;

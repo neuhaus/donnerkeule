@@ -56,7 +56,7 @@ shim = r"""
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef int spinlock_t;
-static bool dmabuf_control_ring, dmabuf_push_done, dmabuf_verbs;
+static bool dmabuf_push_done, dmabuf_verbs;
 static bool tbv_dmabuf_verbs_enabled(void) { return dmabuf_verbs; }
 #define READ_ONCE(value) (value)
 struct completion { unsigned int calls; };
@@ -159,26 +159,18 @@ int main(void) {
     struct tbv_dmabuf_wire m, late;
     ctrl.pending.next = ctrl.pending.prev = &ctrl.pending;
     ctrl.ready = true;
-    /* Module parameters and peer capabilities through the kernel wrappers;
-     * a tracker built for the other transport is never ready. */
-    for (unsigned int flags = 0; flags < 16; flags++) {
-        bool ring = (flags & 3) == 3;
-        bool push = (flags & 12) == 12 && !ring;
-        dmabuf_control_ring = flags & 1;
-        peer.remote_control_ring = flags & 2;
-        dmabuf_push_done = flags & 4;
-        peer.remote_push_done = flags & 8;
+    /* Module parameters and peer capabilities through the kernel wrappers. */
+    for (unsigned int flags = 0; flags < 4; flags++) {
+        bool push = (flags & 3) == 3;
+        dmabuf_push_done = flags & 1;
+        peer.remote_push_done = flags & 2;
         dmabuf_verbs = true;
-        assert(tbv_control_enabled() == (bool)(flags & 1));
-        assert(tbv_control_push_enabled() == (bool)(flags & 4));
+        assert(!tbv_control_enabled());
+        assert(tbv_control_push_enabled() == (bool)(flags & 1));
         assert(tbv_control_xdomain_required(&peer) == push);
-        assert(tbv_control_required(&peer) == (ring || push));
+        assert(tbv_control_required(&peer) == push);
         peer.dmabuf_control = &ctrl;
-        ctrl.xdomain = push;
-        assert(tbv_control_ready(&peer));
-        ctrl.xdomain = !push;
-        assert(!tbv_control_ready(&peer));
-        ctrl.xdomain = push;
+        assert(tbv_control_ready(&peer) == push);
         ctrl.failure = -EIO;
         assert(!tbv_control_ready(&peer));
         ctrl.failure = 0;

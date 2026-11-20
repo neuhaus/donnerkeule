@@ -431,8 +431,6 @@ int tbv_native_control_handle_packet(struct tbv_state *state,
 
 	if (!state)
 		return 0;
-	if (tbv_control_handle_setup(state, source_xd, buf, size))
-		return 1;
 	if (tbv_dmabuf_handle_packet(state, source_xd, buf, size))
 		return 1;
 

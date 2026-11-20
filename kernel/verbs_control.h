@@ -12,6 +12,7 @@ struct tb_xdomain;
 struct seq_file;
 struct dentry;
 
+bool tbv_control_ring_requested(void);
 bool tbv_control_enabled(void);
 bool tbv_control_push_enabled(void);
 bool tbv_control_xdomain_required(const struct tbv_peer *peer);
@@ -22,8 +23,6 @@ void tbv_control_stop(struct tbv_peer *peer);
 void tbv_control_destroy(struct tbv_peer *peer);
 void tbv_control_get(struct tbv_control *ctrl);
 void tbv_control_put(struct tbv_control *ctrl);
-int tbv_control_handle_setup(struct tbv_state *state, struct tb_xdomain *source,
-			     const void *buf, size_t size);
 void tbv_control_handle_done(struct tbv_state *state, struct tb_xdomain *source,
 			     const struct tbv_dmabuf_wire *m);
 int tbv_control_xdomain_exchange(struct tbv_peer *peer,

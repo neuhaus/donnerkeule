@@ -44,6 +44,22 @@
           };
         });
       mkThunderboltLinuxPackages = pkgs: pkgs.linuxPackagesFor (mkThunderboltKernel pkgs);
+      mkThunderboltDebugKernel =
+        pkgs:
+        let
+          base = mkThunderboltKernel pkgs;
+        in
+        base.override {
+          pname = "linux-thunderbolt-debug";
+          structuredExtraConfig = with lib.kernel; {
+            PROVE_LOCKING = yes;
+            LOCKDEP = yes;
+            KASAN = yes;
+            KASAN_GENERIC = yes;
+            DEBUG_ATOMIC_SLEEP = yes;
+          };
+        };
+      mkThunderboltDebugLinuxPackages = pkgs: pkgs.linuxPackagesFor (mkThunderboltDebugKernel pkgs);
       rdmaCoreUsb4Patches = map
         (name: ./packaging/rdma-core-patches + "/${name}")
         (lib.filter (name: name != "")
@@ -284,18 +300,23 @@
             module = pkgs.linuxPackages_7_2.callPackage ./nix/module.nix { };
             thunderboltKernel = mkThunderboltKernel pkgs;
             thunderboltLinuxPackages = mkThunderboltLinuxPackages pkgs;
+            thunderboltDebugKernel = mkThunderboltDebugKernel pkgs;
+            thunderboltDebugLinuxPackages = mkThunderboltDebugLinuxPackages pkgs;
             moduleForThunderboltKernel = thunderboltLinuxPackages.callPackage ./nix/module.nix { };
+            moduleForThunderboltDebugKernel = thunderboltDebugLinuxPackages.callPackage ./nix/module.nix { };
           in
           {
             default = module;
             linux-thunderbolt = thunderboltKernel;
             linux-thunderbolt-dev = thunderboltKernel.dev;
             linux-thunderbolt-modules = thunderboltKernel.modules;
+            linux-thunderbolt-debug = thunderboltDebugKernel;
             rdma-core-usb4 = rdmaCoreUsb4;
             rdma-core-source = pkgs.rdma-core.src;
             thunderbolt-ibverbs = module;
             thunderbolt-ibverbs-no-profiling = module.override { enableProfiling = false; };
             thunderbolt-ibverbs-linux-thunderbolt = moduleForThunderboltKernel;
+            thunderbolt-ibverbs-linux-thunderbolt-debug = moduleForThunderboltDebugKernel;
             tbv-perftest = perftestBench.runner;
           }
         )

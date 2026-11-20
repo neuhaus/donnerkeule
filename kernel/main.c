@@ -202,6 +202,15 @@ static int __init tbv_init(void)
 		goto err_path_symbols;
 	}
 
+	ret = tbv_loopback_start(&tbv_driver_state);
+	if (ret) {
+		tbv_ibdev_stop(&tbv_driver_state);
+		tbv_services_stop(&tbv_driver_state);
+		tbv_dmabuf_stop();
+		tbv_core_exit(&tbv_driver_state);
+		goto err_path_symbols;
+	}
+
 	if (cfg.lanes_auto)
 		strscpy(lanes_desc, "auto", sizeof(lanes_desc));
 	else if (cfg.lanes_min == cfg.lanes_max)
@@ -226,6 +235,7 @@ err_path_symbols:
 
 static void __exit tbv_exit(void)
 {
+	tbv_loopback_stop(&tbv_driver_state);
 	tbv_ibdev_stop(&tbv_driver_state);
 	tbv_services_stop(&tbv_driver_state);
 	tbv_dmabuf_stop();

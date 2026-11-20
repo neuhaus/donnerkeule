@@ -211,8 +211,9 @@ tbv_dmabuf_tx_fsm_step(struct tbv_dmabuf_tx_fsm *fsm,
 			fsm->state = TBV_DMABUF_TX_WAIT_DONE;
 			return TBV_DMABUF_TX_ACT_WAIT_DONE;
 		}
-		if (status == -ETIMEDOUT && fsm->canceled)
-			; /* canceled already set by caller on drain */
+		if (status == -ETIMEDOUT && fsm->canceled) {
+			/* canceled already set by caller on drain */
+		}
 		fsm->err = status;
 		fsm->state = TBV_DMABUF_TX_ABORT;
 		return TBV_DMABUF_TX_ACT_ABORT;

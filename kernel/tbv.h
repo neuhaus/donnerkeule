@@ -95,6 +95,10 @@ struct tbv_path_owned_frame {
 	u8 eof;
 };
 
+struct tb_nhi;
+struct tb_ring;
+struct ring_frame;
+
 struct tbv_ring_ops {
 	struct tb_ring *(*alloc_tx)(struct tb_nhi *nhi, int hop, int size,
 				    unsigned int flags);
@@ -112,6 +116,16 @@ struct tbv_ring_ops {
 };
 
 extern const struct tbv_ring_ops tbv_hw_ring_ops;
+
+struct tbv_state;
+
+#ifdef TBV_LOOPBACK
+int tbv_loopback_start(struct tbv_state *state);
+void tbv_loopback_stop(struct tbv_state *state);
+#else
+static inline int tbv_loopback_start(struct tbv_state *state) { return 0; }
+static inline void tbv_loopback_stop(struct tbv_state *state) {}
+#endif
 
 struct tbv_path {
 	enum tbv_path_state state;

@@ -61,17 +61,19 @@ struct tbv_peer *tbv_peer_get_or_create(struct tbv_state *state,
 	mutex_init(&peer->dmabuf_control_lock);
 
 	mutex_lock(&state->lock);
-	list_for_each_entry(pos, &state->peers, node) {
-		if (pos->xd != xd)
-			continue;
+	if (xd) {
+		list_for_each_entry(pos, &state->peers, node) {
+			if (pos->xd != xd)
+				continue;
 
-		refcount_inc(&pos->refcnt);
-		mutex_unlock(&state->lock);
-		tb_xdomain_put(peer->xd);
-		kfree(peer);
-		pr_debug("peer %u reused refs=%u\n", pos->peer_id,
-			 refcount_read(&pos->refcnt));
-		return pos;
+			refcount_inc(&pos->refcnt);
+			mutex_unlock(&state->lock);
+			tb_xdomain_put(peer->xd);
+			kfree(peer);
+			pr_debug("peer %u reused refs=%u\n", pos->peer_id,
+				 refcount_read(&pos->refcnt));
+			return pos;
+		}
 	}
 
 	ida_init(&peer->rail_ids);
@@ -117,7 +119,6 @@ struct tbv_rail *tbv_peer_add_rail(struct tbv_peer *peer,
 	struct tbv_path_config path_cfg;
 	struct tbv_rail *rail;
 	struct tbv_rail *pos;
-	u32 existing_peer_id = 0;
 	int rail_id;
 
 	rail = kzalloc(sizeof(*rail), GFP_KERNEL);

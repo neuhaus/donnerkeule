@@ -17,6 +17,12 @@ ifeq ($(TBV_PROFILING),0)
 ccflags-y += -DTBV_DISABLE_PROFILING
 endif
 
+TBV_LOOPBACK ?= 0
+ifeq ($(TBV_LOOPBACK),1)
+ccflags-y += -DTBV_LOOPBACK=1
+thunderbolt_ibverbs-y += ring_loop.o
+endif
+
 # Thunderbolt dropped the probe ID argument in Linux 7.3. Probe the actual
 # headers, including distro backports, instead of assuming a version boundary.
 ifneq ($(KERNELRELEASE),)

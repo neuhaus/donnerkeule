@@ -2453,7 +2453,7 @@ void tbv_path_destroy(struct tbv_path *path, struct tb_xdomain *xd)
 	cancel_delayed_work_sync(&path->tx_poll_work);
 	cancel_delayed_work_sync(&path->rx_supp_poll_work);
 
-	if (tunnel_enabled) {
+	if (tunnel_enabled && xd) {
 		int ret = tbv_path_disable_tunnel(path, xd);
 
 		if (ret)

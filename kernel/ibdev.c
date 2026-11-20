@@ -8679,7 +8679,7 @@ static int tbv_ibdev_register_one(struct tbv_state *state,
 
 	ib_set_device_ops(&dev->base, &tbv_ibdev_ops);
 
-	dma_device = get_device(tb_ring_dma_device(rail->path.tx_ring));
+	dma_device = get_device(rail->path.ring_ops->dma_device(rail->path.tx_ring));
 	dev->base.dev.parent = dma_device;
 	ret = tbv_ibdev_attach_netdev(dev);
 	if (ret) {
@@ -8738,7 +8738,15 @@ static int tbv_ibdev_rail_name_index(const struct tbv_rail *rail)
 {
 	int domain_idx;
 
-	if (!rail || !rail->peer || !rail->peer->xd || !rail->peer->xd->tb)
+	if (!rail || !rail->peer)
+		return -ENODEV;
+	if (!rail->peer->xd) {
+		if (rail->path.ring_ops != &tbv_hw_ring_ops)
+			return rail->peer->peer_id > 0 ?
+				(int)(rail->peer->peer_id - 1) : 0;
+		return -ENODEV;
+	}
+	if (!rail->peer->xd->tb)
 		return -ENODEV;
 
 	domain_idx = rail->peer->xd->tb->index;

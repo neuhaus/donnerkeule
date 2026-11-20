@@ -91,7 +91,8 @@ build_module() {
 	[[ -d "/lib/modules/$kver/build" ]] ||
 		die "kernel headers missing: /lib/modules/$kver/build"
 
-	make -C "$src_dir" KVER="$kver" KDIR="/lib/modules/$kver/build" modules
+	make -C "$src_dir" KVER="$kver" KDIR="/lib/modules/$kver/build" \
+		TBV_LOOPBACK="${TBV_LOOPBACK:-1}" modules
 	install -D -m 0644 "$src_dir/kernel/thunderbolt_ibverbs.ko" \
 		"/lib/modules/$kver/extra/thunderbolt_ibverbs.ko"
 	depmod -a "$kver"
@@ -100,9 +101,14 @@ build_module() {
 load_and_check() {
 	local kver="$1"
 	local ibdev=""
+	local loopback_arg=""
+
+	if [[ "${TBV_LOOPBACK:-1}" == "1" ]]; then
+		loopback_arg="loopback=1"
+	fi
 
 	modprobe thunderbolt_ibverbs bind_services=0 \
-		register_verbs=1
+		register_verbs=1 $loopback_arg
 
 	if ! grep -q '^thunderbolt_ibverbs ' /proc/modules; then
 		dmesg | tail -n 80 >&2 || true
@@ -142,6 +148,23 @@ load_and_check() {
 			"$src_dir/tools/ci/verbs-smoke.c" -libverbs \
 			-o /tmp/tbv-verbs-smoke
 		/tmp/tbv-verbs-smoke
+		if [[ "${TBV_LOOPBACK:-1}" == "1" ]] &&
+		   grep -q 'usb4_rdma0' /tmp/tbv-ibv-devices.txt &&
+		   grep -q 'usb4_rdma1' /tmp/tbv-ibv-devices.txt &&
+		   [[ -f "$src_dir/userspace/bench/rc_write_imm_verify.c" ]]; then
+			gcc -O2 -Wall -Wextra \
+				"$src_dir/userspace/bench/rc_write_imm_verify.c" \
+				-libverbs -o /tmp/tbv-rc-verify
+			/tmp/tbv-rc-verify --role recv --dev usb4_rdma0 \
+				--gid-index 0 --tcp-port 19222 \
+				--max-size 262144 --seconds 2 &
+			local rpid=$!
+			sleep 1
+			/tmp/tbv-rc-verify --role send --dev usb4_rdma1 \
+				--gid-index 0 --connect 127.0.0.1 \
+				--tcp-port 19222 --max-size 262144 --seconds 2
+			wait "$rpid"
+		fi
 	else
 		printf 'libibverbs did not enumerate %s without a userspace provider; checked rdma(8) and uverbs char device instead\n' "$ibdev"
 	fi

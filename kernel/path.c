@@ -651,6 +651,53 @@ static bool tbv_tx_done_batch_add(struct tbv_tx_done_entry *entries,
 	return true;
 }
 
+static bool tbv_path_maybe_wake_build_locked(struct tbv_path *path)
+{
+	u32 reserve;
+	u32 avail;
+	u32 threshold;
+
+	lockdep_assert_held(&path->tx_lock);
+	if (!path->tx_build_waiting)
+		return false;
+	if (path->state != TBV_PATH_TUNNEL_ENABLED) {
+		path->tx_build_waiting = false;
+		return true;
+	}
+	reserve = tbv_path_tx_control_frame_reserve(path);
+	avail = path->tx_free_count > reserve ?
+		path->tx_free_count - reserve : 0;
+	threshold = max_t(u32, path->tx_frame_count / 4, 1);
+	if (avail >= threshold ||
+	    (!path->tx_data_queued && !path->tx_claimed &&
+	     !atomic_read(&path->tx_inflight))) {
+		path->tx_build_waiting = false;
+		return true;
+	}
+	return false;
+}
+
+bool tbv_path_arm_build_wake(struct tbv_path *path, u32 needed)
+{
+	unsigned long flags;
+	u32 reserve;
+	u32 avail;
+	bool wait = false;
+
+	spin_lock_irqsave(&path->tx_lock, flags);
+	if (path->state == TBV_PATH_TUNNEL_ENABLED) {
+		reserve = tbv_path_tx_control_frame_reserve(path);
+		avail = path->tx_free_count > reserve ?
+			path->tx_free_count - reserve : 0;
+		if (avail < needed) {
+			path->tx_build_waiting = true;
+			wait = true;
+		}
+	}
+	spin_unlock_irqrestore(&path->tx_lock, flags);
+	return wait;
+}
+
 static void tbv_path_tx_complete_flush(struct tbv_path *path,
 				       struct tbv_tx_complete_batch *batch)
 {
@@ -658,6 +705,7 @@ static void tbv_path_tx_complete_flush(struct tbv_path *path,
 	int status = batch->canceled ? -ECANCELED : 0;
 	u32 total_completed = 0;
 	u32 total_data_ok = 0;
+	bool wake_build = false;
 	unsigned long flags;
 
 	if (!batch->count)
@@ -707,6 +755,10 @@ static void tbv_path_tx_complete_flush(struct tbv_path *path,
 				list_add_tail(&packet->node, &packets);
 			else if (!batch->canceled)
 				total_data_ok++;
+		}
+		if (chunk_frames) {
+			atomic_sub(chunk_frames, &path->tx_inflight);
+			wake_build |= tbv_path_maybe_wake_build_locked(path);
 		}
 		spin_unlock_irqrestore(&path->tx_lock, flags);
 
@@ -759,10 +811,10 @@ static void tbv_path_tx_complete_flush(struct tbv_path *path,
 	}
 	if (total_data_ok)
 		atomic64_add(total_data_ok, &path->data_tx_completed);
-	if (total_completed)
-		atomic_sub(total_completed, &path->tx_inflight);
 	batch->count = 0;
 
+	if (wake_build)
+		tbv_path_queue_delayed_work(path, &path->build_work, 0);
 	tbv_path_schedule_tx(path);
 }
 
@@ -1710,13 +1762,17 @@ void tbv_path_release_tx_frames(struct tbv_path *path,
 				struct list_head *list)
 {
 	unsigned long flags;
+	bool wake_build;
 
 	if (!path || !list || list_empty(list))
 		return;
 
 	spin_lock_irqsave(&path->tx_lock, flags);
 	tbv_path_return_tx_frames_locked(path, list, true);
+	wake_build = tbv_path_maybe_wake_build_locked(path);
 	spin_unlock_irqrestore(&path->tx_lock, flags);
+	if (wake_build)
+		tbv_path_queue_delayed_work(path, &path->build_work, 0);
 }
 
 int tbv_path_enqueue_tx_frames(struct tbv_path *path,
@@ -2719,9 +2775,14 @@ static void tbv_path_cancel_data_match(struct tbv_path *path,
 			f_done(f_done_ctx, -ECANCELED);
 	}
 	if (!list_empty(&cancel_frames)) {
+		bool wake_build;
+
 		spin_lock_irqsave(&path->tx_lock, flags);
 		tbv_path_return_tx_frames_locked(path, &cancel_frames, false);
+		wake_build = tbv_path_maybe_wake_build_locked(path);
 		spin_unlock_irqrestore(&path->tx_lock, flags);
+		if (wake_build)
+			tbv_path_queue_delayed_work(path, &path->build_work, 0);
 	}
 
 	while (!list_empty(&cancel_packets)) {
@@ -2768,6 +2829,7 @@ static void tbv_path_flush_tx_queue(struct tbv_path *path, int status)
 	path->tx_zcopy_queued = 0;
 	path->tx_claimed = 0;
 	path->tx_scheduling = false;
+	path->tx_build_waiting = false;
 	path->tx_raw_stream_active = false;
 	path->tx_raw_stream_owner = NULL;
 	path->tx_raw_stream_end_seen = false;

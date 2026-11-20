@@ -224,6 +224,7 @@ struct tbv_path {
 	bool tx_poll_enabled;
 	bool rx_supp_poll_enabled;
 	bool tx_scheduling;
+	bool tx_build_waiting;
 	bool tx_raw_stream_active;
 	bool tx_raw_stream_end_seen;
 	u32 tx_raw_stream_inflight;
@@ -502,6 +503,7 @@ void tbv_path_release_tx_frames(struct tbv_path *path,
 int tbv_path_enqueue_tx_frames(struct tbv_path *path,
 			       struct list_head *list, u32 count,
 			       unsigned int flags);
+bool tbv_path_arm_build_wake(struct tbv_path *path, u32 needed);
 void tbv_ibdev_path_build_work(struct work_struct *work);
 int tbv_path_send(struct tbv_path *path, const void *data, u32 len,
 		  unsigned int flags,

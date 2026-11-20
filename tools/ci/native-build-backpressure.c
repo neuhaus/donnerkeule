@@ -11,14 +11,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
+typedef int atomic_t;
 typedef long long atomic64_t;
+#define atomic_read(p) (*(p))
 #define atomic64_inc(p) (++*(p))
 #define atomic64_add(v, p) (*(p) += (v))
 #define READ_ONCE(x) (x)
 #define min_t(t, a, b) ((t)(a) < (t)(b) ? (t)(a) : (t)(b))
+#define max_t(t, a, b) ((t)(a) > (t)(b) ? (t)(a) : (t)(b))
 #define clamp_t(t, v, lo, hi) \
 	((t)(v) < (t)(lo) ? (t)(lo) : ((t)(v) > (t)(hi) ? (t)(hi) : (t)(v)))
 #define BIT(n) (1u << (n))
+#define lockdep_assert_held(l) ((void)(l))
 #define spin_lock_irqsave(l, f) ((void)(l), (void)(f))
 #define spin_unlock_irqrestore(l, f) ((void)(l), (void)(f))
 #define TBV_PATH_SEND_CONTROL BIT(0)
@@ -74,10 +78,13 @@ struct tbv_data_frame {
 	bool inflight;
 };
 struct tbv_path {
-	int tx_lock, state;
+	int tx_lock, state, build_work;
 	u32 tx_frame_count, tx_free_count, tx_claimed, tx_data_queued;
+	bool tx_build_waiting;
+	atomic_t tx_inflight;
 	struct list_head tx_free, tx_data_queue;
 	atomic64_t data_tx_enqueued;
+	u32 build_wakes;
 };
 struct tbv_state { atomic64_t data_wr_block_deferred; };
 struct tbv_qp { struct tbv_state *owner; bool closing; int state; };
@@ -90,6 +97,9 @@ struct tbv_send_build_job {
 };
 
 static void tbv_path_schedule_tx(struct tbv_path *path) { (void)path; }
+static void tbv_path_queue_delayed_work(struct tbv_path *path, int *work,
+					unsigned long delay)
+{ (void)work; (void)delay; path->build_wakes++; }
 static void tbv_send_retire_frames(struct tbv_send_ctx *s, u32 n, int status)
 { (void)status; s->retired += n; }
 
@@ -204,6 +214,20 @@ int main(void)
 		   "down path did not retire the block"))
 		return 1;
 
-	puts("Native block build: staging claims respect control reserve, full ring defers in order");
+	/* Event-driven build wake: arms when avail < needed, wakes at >= 1/4 ring. */
+	init_path(&p, pool, 160);
+	if (expect(!tbv_path_arm_build_wake(&p, 64) && !p.tx_build_waiting,
+		   "armed wait when enough frames were already free"))
+		return 1;
+	if (expect(!tbv_path_claim_tx_frames(&p, 100, &list) &&
+		   tbv_path_arm_build_wake(&p, 64) && p.tx_build_waiting,
+		   "did not arm build wake when frames were scarce"))
+		return 1;
+	tbv_path_release_tx_frames(&p, &list);
+	if (expect(!p.tx_build_waiting && p.build_wakes == 1,
+		   "releasing frames did not wake build_work"))
+		return 1;
+
+	puts("Native block build: staging claims respect control reserve, full ring defers and wakes on drain");
 	return 0;
 }

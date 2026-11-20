@@ -4026,9 +4026,6 @@ static struct workqueue_struct *tbv_send_build_wq(struct tbv_send_ctx *ctx)
 	return owner->workqueue ? owner->workqueue : system_unbound_wq;
 }
 
-/* How long a path whose data queue is full waits before building again. */
-#define TBV_SEND_BUILD_RETRY_JIFFIES 1
-
 void tbv_ibdev_path_build_work(struct work_struct *work)
 {
 	struct tbv_path *path = container_of(to_delayed_work(work),
@@ -4048,18 +4045,20 @@ void tbv_ibdev_path_build_work(struct work_struct *work)
 		if (!job)
 			break;
 		if (tbv_native_send_run_build_job(job)) {
+			u32 needed = min_t(u32, job->nfrags,
+					   TBV_SEND_BUILD_CHUNK);
+
 			/*
-			 * The queue drains as the ring sends: resume this job
-			 * first, so the path keeps sending blocks in order.
+			 * The ring drains as frames complete: resume this job
+			 * first so the path keeps sending blocks in order.
 			 * The job's rail reference keeps the path alive.
 			 */
 			spin_lock_irqsave(&path->build_lock, flags);
 			list_add(&job->node, &path->build_jobs);
 			spin_unlock_irqrestore(&path->build_lock, flags);
-			queue_delayed_work(tbv_send_build_wq(job->send),
-					   &path->build_work,
-					   TBV_SEND_BUILD_RETRY_JIFFIES);
-			break;
+			if (tbv_path_arm_build_wake(path, needed))
+				break;
+			continue;
 		}
 		list_add_tail(&job->node, &done);
 	}

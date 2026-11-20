@@ -1,13 +1,10 @@
 # Measurement archives
 
-Every qualification run keeps its report here, next to the raw logs it was
-written from. The reports are the reviewable part; the logs are evidence you
-only need when a number looks wrong.
-
-This directory is large on purpose (5,281 tracked files, about 53 MB). It is
-marked `export-ignore` in `/.gitattributes`, so `git archive` tarballs, DKMS
-source copies and release artefacts do not carry it. A clone still gets
-everything.
+Every qualification run keeps its Markdown report here. The raw logs and
+reproduction artefacts live in
+[neuhaus/donnerkeule-results](https://github.com/neuhaus/donnerkeule-results)
+with full commit history preserved; each report links directly to its raw
+evidence there.
 
 ## Reports, newest first
 
@@ -29,19 +26,19 @@ everything.
 The reports from 5 to 8 October are written in German.
 
 Two runs keep a second README beside their evidence:
-[2026-10-08-hardware/](2026-10-08-hardware/README.md) and
-[2026-10-16-verbs-parity/](2026-10-16-verbs-parity/README.md).
+[2026-10-08-hardware/](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-08-hardware/README.md) and
+[2026-10-16-verbs-parity/](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-16-verbs-parity/README.md).
 
 ## perftest sweeps by host pair
 
 Named for the hardware rather than the date, each with its own `perftest.md`:
 
-- [8845HS-mbp-1x40g](8845HS-mbp-1x40g/perftest.md)
-- [strix-noiommu-mbp-1x40g](strix-noiommu-mbp-1x40g/perftest.md)
-- [strix-2p-noiommu-2x40g](strix-2p-noiommu-2x40g/perftest.md)
+- [8845HS-mbp-1x40g](https://github.com/neuhaus/donnerkeule-results/blob/main/8845HS-mbp-1x40g/perftest.md)
+- [strix-noiommu-mbp-1x40g](https://github.com/neuhaus/donnerkeule-results/blob/main/strix-noiommu-mbp-1x40g/perftest.md)
+- [strix-2p-noiommu-2x40g](https://github.com/neuhaus/donnerkeule-results/blob/main/strix-2p-noiommu-2x40g/perftest.md)
 
 ## Recreating a run
 
-Each report names the command that produced it, and each run directory keeps
-the scripts and `.parameters` files used on the day. `result/`, `*.json`,
-`*.jsonl` and `logs/` are deliberately untracked, see `/.gitignore`.
+Each report names the command that produced it, and each run directory in
+[neuhaus/donnerkeule-results](https://github.com/neuhaus/donnerkeule-results)
+keeps the scripts and `.parameters` files used on the day.

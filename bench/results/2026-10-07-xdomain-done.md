@@ -64,7 +64,7 @@ STATUS-Wiederherstellung und Aufwecken bei Disconnect. Beide Prüfungen bestehen
 Die Simulation qualifiziert weder Kernel-Nebenläufigkeit noch tatsächliches
 DMA. Skriptsyntax und Whitespace-Prüfung bestehen ebenfalls.
 Die spätere Hardwareprüfung hält den gebauten Quellstand in
-[driver-build-source-hashes.json](2026-10-08-hardware/driver-build-source-hashes.json) fest.
+[driver-build-source-hashes.json](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-08-hardware/driver-build-source-hashes.json) fest.
 
 Im lokalen Prüflauf vom 7. Oktober wurde auf dem macOS-Arbeitsplatz kein
 Linux-Kernelmodul gebaut. Die frühere Hardwarequalifikation galt für ihren

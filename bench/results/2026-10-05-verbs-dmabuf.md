@@ -98,7 +98,7 @@ RMA-Fensterbarrieren und vollständige GPU-Prüfung. Sie sind keine reine DMA-La
 und kein Gufo-Benchmark. Der bisherige SEND-Pfad hatte in einzelnen Größen starke
 Ausreißer und insgesamt 28 Retransmits auf fuzzy; deshalb wird aus seinen Zeiten
 kein Leistungsgewinn abgeleitet. Samples aller Operationen stehen in
-[timing-samples.json](2026-10-05-verbs-dmabuf/timing-samples.json).
+[timing-samples.json](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf/timing-samples.json).
 
 ## Behobene Fehler und Grenzen
 
@@ -139,8 +139,8 @@ ursprünglichen Image und ihren exakten Startparametern neu gestartet:
 um 20:40 CEST auf fuzzy `/ready` mit HTTP 200; misty hat beide Bootstrap-Verbindungen.
 Die geschützten Startkonfigurationen bleiben auf den Hosts und sind nicht Teil
 dieses Berichts. Nachweise:
-[fuzzy](2026-10-05-verbs-dmabuf/fuzzy/restoration-check.txt),
-[misty](2026-10-05-verbs-dmabuf/misty/restoration-check.txt).
+[fuzzy](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf/fuzzy/restoration-check.txt),
+[misty](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf/misty/restoration-check.txt).
 
 Je Host liegen im Ergebnisverzeichnis:
 `dmabuf-gpu-signaled.log`, `dmabuf-gpu-unsignaled-errors.log`,

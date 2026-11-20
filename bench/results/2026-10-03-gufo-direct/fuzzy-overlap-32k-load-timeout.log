@@ -1,4 +1,0 @@
-[batched-probe rank0 t=3638ms] RDMA peer established on bootstrap port 18515
-[batched-probe rank0 t=3638ms] batched decode of 2 members
-[batched-probe rank0 t=20523ms] batched scope bound: 1, prefill_capacity=4096 budget=8
-[batched-probe t=50534ms] rank0 pre-prefill barrier failed: bootstrap receive: Resource temporarily unavailable

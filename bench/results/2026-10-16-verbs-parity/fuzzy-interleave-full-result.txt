@@ -1,5 +1,0 @@
-PHASE round=1 rank=0 op=WRITE bytes=33554368 rq_post_us=0.628 gpu_submit_us=7.126 tx_release_us=551.502 ready_us=51.440 wr_post_us=1.500 cq_wait_us=9029.205 rx_release_us=17.654 verify_us=596.927
-VERIFY PASS round=1 rank=0 payload_bytes=983336448 guard_bytes_per_message=64 tcp_data_calls=0
-REMOTE_ERROR PASS unsignaled_send=REM_ACCESS_ERR recv=WR_FLUSH_ERR
-PASS rounds=2 MR_and_QP_recreation=1
-CASE interleave-full exit=0

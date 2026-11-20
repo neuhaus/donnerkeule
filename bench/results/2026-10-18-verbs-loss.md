@@ -38,7 +38,7 @@ rail is now logged.
 After each quarantine both modules were reloaded (`lab.sh load dmabuf 1`).
 Counters are deltas of the debugfs `summary` and `peers`. Raw output, kernel log
 excerpts, fault hit counts and scripts are in
-[2026-10-18-verbs-loss/](2026-10-18-verbs-loss/). A case name below is the file
+[2026-10-18-verbs-loss/](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-18-verbs-loss/). A case name below is the file
 prefix there (`<host>-<case>.log`, `<case>.case`). Hit counts in `.faults` are
 cumulative since module load.
 
@@ -138,6 +138,6 @@ workqueue warning above, before its fix.
 ## Evidence
 
 [Raw logs, debugfs before/after, kernel log excerpts, fault hit counts and
-the scripts](2026-10-18-verbs-loss/). Large traces were not kept. The first
+the scripts](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-18-verbs-loss/). Large traces were not kept. The first
 sender-side link-loss attempt and a setup failure after an accidental module
 restore are not included.

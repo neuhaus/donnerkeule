@@ -1,2 +1,0 @@
-IMPORT PASS cases=8 nonzero_fd_offset=4096
-FAIL: ibv_create_qp: Transport endpoint is not connected

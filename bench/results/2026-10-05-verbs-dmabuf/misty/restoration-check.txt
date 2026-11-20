@@ -1,6 +1,0 @@
-2026-10-05T18:40:19Z
-baseline_build_note_match=1
-name=boring_pare running=true exit=0
-native_ready_rails=4
-gufo_bootstrap_connections=2
-baseline_parameters_match=1

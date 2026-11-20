@@ -1,7 +1,0 @@
-[batched-probe rank1 t=297ms] RDMA peer established on bootstrap port 18515
-[batched-probe rank1 t=297ms] transport rdma_device=usb4_rdma0 port=1 link=roce_v2 gid_index=1 mtu=4096 windows=host_write (ibv_reg_dmabuf_mr: Operation not supported)
-[batched-probe rank1 t=376ms] allreduce rows=1 bytes=10240 n=1000 min_us=18.5 p50_us=33.5 mean_us=53.9 p99_us=62.1 verified=1
-[batched-probe rank1 t=447ms] allreduce rows=2 bytes=20480 n=1000 min_us=21.5 p50_us=41.9 mean_us=44.6 p99_us=84.7 verified=1
-[batched-probe rank1 t=550ms] allreduce rows=8 bytes=81920 n=1000 min_us=19.4 p50_us=55.1 mean_us=56.3 p99_us=101.9 verified=1
-Read from remote host misty.fritz.box: Connection reset by peer
-client_loop: send disconnect: Broken pipe

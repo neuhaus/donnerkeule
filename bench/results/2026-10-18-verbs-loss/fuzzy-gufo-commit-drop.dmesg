@@ -1,4 +1,0 @@
-[126106.845539] thunderbolt_ibverbs dmabuf: rail 0x0 stopped after a data error or abort; recreate the connection to use it again
-[126106.845581] thunderbolt_ibverbs dmabuf: rail 0x1 stopped after a data error or abort; recreate the connection to use it again
-[126106.845602] thunderbolt_ibverbs dmabuf: rail 0x0 stopped after a data error or abort; recreate the connection to use it again
-[126106.845618] thunderbolt_ibverbs dmabuf: rail 0x1 stopped after a data error or abort; recreate the connection to use it again

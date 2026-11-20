@@ -1,9 +1,0 @@
-IMPORT PASS cases=8 nonzero_fd_offset=4096
-BOOTSTRAP round=0 qpn=2312 peer_qpn=2312 tcp_bytes=200 then_closed=1
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1
-RESULT round=0 rank=1 op=SEND_IMM bytes=262144 iterations=5000 depth=1 persistent_rq=1 late_receives=0 spin_us=5000 profiled=0 us_per_message=696.899
-PHASE round=0 rank=1 op=SEND_IMM bytes=262144 rq_post_us=21.617 gpu_submit_us=2.677 tx_release_us=11.673 ready_us=0.026 wr_post_us=5.117 cq_wait_us=578.133 rx_release_us=39.509 verify_us=38.148
-VERIFY PASS round=0 rank=1 payload_bytes=1310720000 guard_bytes_per_message=64 tcp_data_calls=0
-IMPORT PASS cases=8 nonzero_fd_offset=4096
-BOOTSTRAP round=1 qpn=2313 peer_qpn=2313 tcp_bytes=200 then_closed=1
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1

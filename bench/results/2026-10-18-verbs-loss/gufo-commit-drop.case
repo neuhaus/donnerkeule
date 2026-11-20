@@ -1,8 +1,0 @@
-CASE gufo-commit-drop rank0=1 rank1=1
-[batched-probe rank0 t=3246ms] transport rdma_device=usb4_rdma0 port=1 link=roce_v2 gid_index=1 mtu=4096 windows=gpu_send
-[batched-probe t=3830ms] rank0 allreduce bench failed at 10240 B: verbs communicator is poisoned: verbs all-reduce completion failed with status 12
-[batched-probe rank1 t=251ms] transport rdma_device=usb4_rdma0 port=1 link=roce_v2 gid_index=1 mtu=4096 windows=gpu_send
-[batched-probe t=836ms] rank1 allreduce bench failed at 10240 B: verbs communicator is poisoned: verbs peer closed the bootstrap connection
-elapsed=8s
-fuzzy: dmabuf_credit_aborted+1 dmabuf_credit_committed+301 dmabuf_credit_direct+298 dmabuf_credit_granted+302 dmabuf_credit_stale+1 dmabuf_credit_used+301 control_done+302 control_done_rx+301 control_rx+603 control_tx+956 gpu_stopped_rails=4
-misty: dmabuf_credit_aborted+1 dmabuf_credit_canceled+1 dmabuf_credit_committed+300 dmabuf_credit_direct+297 dmabuf_credit_granted+301 dmabuf_credit_used+301 control_done+301 control_done_rx+302 control_rx+604 control_tx+905 gpu_stopped_rails=4

@@ -63,10 +63,10 @@ bei 7.233,7–7.549,1 µs. Ein längerer, wechselnd geordneter Vergleich unter
 Dauerlast steht noch aus.
 
 Protokolle und Zähler:
-[fuzzy seriell](2026-10-05-verbs-dmabuf-optimization/fuzzy/persistent-serial-20971584.log),
-[fuzzy parallel](2026-10-05-verbs-dmabuf-optimization/fuzzy/persistent-parallel-20971584.log),
-[misty seriell](2026-10-05-verbs-dmabuf-optimization/misty/persistent-serial-20971584.log),
-[misty parallel](2026-10-05-verbs-dmabuf-optimization/misty/persistent-parallel-20971584.log).
+[fuzzy seriell](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/fuzzy/persistent-serial-20971584.log),
+[fuzzy parallel](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/fuzzy/persistent-parallel-20971584.log),
+[misty seriell](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/misty/persistent-serial-20971584.log),
+[misty parallel](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/misty/persistent-parallel-20971584.log).
 Die zugehörigen `*-before.txt` und `*-after.txt` enthalten die Profiling-Deltas.
 
 ## Was die Phasen zeigen
@@ -190,19 +190,19 @@ Test hat SHA-256
 `870bed5e2742d0eb2c7b8501c1cfcacfeccabb4f3aa38df9b9019d641f966baf`.
 
 Die lokalen Verzeichnisse
-[fuzzy](2026-10-05-verbs-dmabuf-optimization/fuzzy/public-results.sha256) und
-[misty](2026-10-05-verbs-dmabuf-optimization/misty/public-results.sha256)
+[fuzzy](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/fuzzy/public-results.sha256) und
+[misty](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/misty/public-results.sha256)
 enthalten 161 bzw. 155 eigene Protokolle/Metadatendateien plus SHA-Manifest.
 `final-artifacts.sha256` verknüpft Quelle, Protokoll, Test und signiertes Modul;
 `historical-artifacts.sha256` hält die früheren Kandidaten fest.
 Alle 1.680 RESULT-/PHASE-Datensätze sind in
-[timing-samples.json](2026-10-05-verbs-dmabuf-optimization/timing-samples.json)
+[timing-samples.json](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/timing-samples.json)
 erhalten. Private Gufo-Startargumente und Umgebungsvariablen wurden nicht in
 dieses Ergebnispaket übernommen.
 
 Wiederherstellung:
-[fuzzy](2026-10-05-verbs-dmabuf-optimization/fuzzy/restoration-check.txt),
-[misty](2026-10-05-verbs-dmabuf-optimization/misty/restoration-check.txt).
+[fuzzy](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/fuzzy/restoration-check.txt),
+[misty](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-05-verbs-dmabuf-optimization/misty/restoration-check.txt).
 Die ursprüngliche Build-ID ist `e898287be93660f988b733c065ab41633a49793c`.
 Der Neustarthelfer wurde für bereits auf Image-ID gesetzte Startargumente
 korrigiert; Image, Kommando, Umgebung und Hostkonfiguration wurden anschließend

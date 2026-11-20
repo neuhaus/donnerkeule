@@ -1,7 +1,0 @@
-CASE kill-holder rank0=255 rank1=0
-VERIFY PASS round=0 rank=0 payload_bytes=82432 guard_bytes_per_message=64 tcp_data_calls=0
-HOLD rank=0 armed_receive_bytes=10304 ms=20000
-HOLD peer sent bytes=10304
-PASS rounds=1 MR_and_QP_recreation=1
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 8 dmabuf_credit_committed: 7 dmabuf_credit_adopted: 0 dmabuf_credit_released: 1 dmabuf_credit_canceled: 1 dmabuf_credit_aborted: 0 dmabuf_credit_used: 6 dmabuf_credit_returned: 0 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 1 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 7 dmabuf_credit_committed: 6 dmabuf_credit_adopted: 1 dmabuf_credit_released: 0 dmabuf_credit_canceled: 0 dmabuf_credit_aborted: 0 dmabuf_credit_used: 7 dmabuf_credit_returned: 1 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 5 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 

@@ -152,7 +152,7 @@ retry and subsequent tests use the same code with the untimed empty-barrier fix,
 SHA256 `4c9aa6a3d4fbb235aaa0656b182d07ed7aeb63558cf01625a54bb4bc58b362bb`.
 
 Logs and the executable consistency checker are in
-[2026-10-03-gufo-direct/](2026-10-03-gufo-direct/). Run
+[2026-10-03-gufo-direct/](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-03-gufo-direct/). Run
 `python3 bench/results/2026-10-03-gufo-direct/verify.py`.
 The earlier kernel-WARN investigation and untested reset/unplug cases remain
 listed in the initial hardware report; this model experiment does not close them.

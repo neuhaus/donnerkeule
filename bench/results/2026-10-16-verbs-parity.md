@@ -133,7 +133,7 @@ it direct placement.
 
 ## Evidence and restoration
 
-[Raw logs, source hashes, task-only patch and timing script](2026-10-16-verbs-parity/README.md).
+[Raw logs, source hashes, task-only patch and timing script](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-16-verbs-parity/README.md).
 The exact original loaded module build IDs and all parameters were restored
 on both hosts. Installed modules/libraries were not replaced; NHI resets were
 not performed. The two application containers used automatic removal and

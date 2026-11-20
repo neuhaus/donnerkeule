@@ -1,5 +1,0 @@
-[126157.659639] thunderbolt_ibverbs dmabuf: unexpected credit commit 28 (armed 0 state 2), stopping its rails
-[126157.659669] thunderbolt_ibverbs dmabuf: rail 0x0 stopped after a data error or abort; recreate the connection to use it again
-[126157.659682] thunderbolt_ibverbs dmabuf: rail 0x1 stopped after a data error or abort; recreate the connection to use it again
-[126157.659693] thunderbolt_ibverbs dmabuf: rail 0x0 stopped after a data error or abort; recreate the connection to use it again
-[126157.659705] thunderbolt_ibverbs dmabuf: rail 0x1 stopped after a data error or abort; recreate the connection to use it again

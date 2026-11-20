@@ -1,7 +1,0 @@
-PASS original module Build ID and every saved parameter match; no experimental device
-kernel: 7.2.8-100.fc43.x86_64
-baseline taint: 4096
-current taint: 4608
-test artifact SHA256:
-676a13a857f12cb75c6a5090f81d47b51ea22fed174af0bfdd52ab65979a58b7  /home/sn/tbv/gpu-direct-lab-20261002/test-unsigned.ko
-176d926000b9dba979e64b2de92b8b29705307ccb42974bb4ef33978ea331ca0  /home/sn/tbv/gpu-direct-lab-20261002/tbv_gpu_direct

@@ -1,6 +1,0 @@
-PASS watchdog-coarse: 349,440 frames/direction; rails=[87552, 87296, 87296, 87296]
-PASS one-rail: 32,768 frames/direction; rails=[32768, 0, 0, 0]
-PASS two-rails: 32,768 frames/direction; rails=[16384, 16384, 0, 0]
-PASS watchdog-uncached: 174,720 frames/direction; rails=[43776, 43648, 43648, 43648]
-PASS completion-soak: 1,048,576 frames/direction; rails=[262144, 262144, 262144, 262144]
-PASS total: 6,272 bidirectional exchanges; 1,638,272 frames and 6,710,362,112 bytes per direction; 13,420,724,224 GPU-verified bytes across both directions

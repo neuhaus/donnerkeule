@@ -144,7 +144,7 @@ Native `ib_read_lat` is flaky (16 KiB and 256 KiB failed in one run, 1 KiB,
 16 KiB, 64 KiB and 256 KiB in the next) and native SENDs above 512 KiB fail
 with `native SEND reorder store failed`. Native runs log rate-limited
 retransmits that all recover; DMA-BUF runs were clean with 0 credit
-mismatches. CSVs: [sweep/](2026-10-25-donnerkeule-merge/sweep/) (`charts.csv`
+mismatches. CSVs: [sweep/](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-25-donnerkeule-merge/sweep/) (`charts.csv`
 is what `plot_perftest.py` drew; `*-big.csv` are the uncapped checks).
 
 ## Installed state
@@ -177,5 +177,5 @@ calls, no credit mismatch, abort or stopped rail.
 ## Evidence
 
 Scripts, verifier/probe/perftest logs and debugfs snapshots before and after
-every case are in [2026-10-25-donnerkeule-merge/](2026-10-25-donnerkeule-merge/);
+every case are in [2026-10-25-donnerkeule-merge/](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-25-donnerkeule-merge/);
 Gufo serving-bench JSON in its `gufo/` folder.

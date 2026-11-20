@@ -1,8 +1,0 @@
-[126266.360526] thunderbolt_ibverbs dmabuf: rail 0x0 stopped after a data error or abort; recreate the connection to use it again
-[126266.360545] thunderbolt_ibverbs dmabuf: rail 0x1 stopped after a data error or abort; recreate the connection to use it again
-[126266.360557] thunderbolt_ibverbs dmabuf: rail 0x0 stopped after a data error or abort; recreate the connection to use it again
-[126266.360569] thunderbolt_ibverbs dmabuf: rail 0x1 stopped after a data error or abort; recreate the connection to use it again
-[126266.360573] thunderbolt_ibverbs dmabuf: unexpected credit commit 44151 (armed 0 state 3), stopping its rails
-[126266.375631] thunderbolt_ibverbs: unregistered per-rail ib_device peer=1 rail=0
-[126266.400600] thunderbolt_ibverbs: unregistered per-rail ib_device peer=1 rail=1
-[126266.400747] thunderbolt_ibverbs: peer 1 destroyed backend=native

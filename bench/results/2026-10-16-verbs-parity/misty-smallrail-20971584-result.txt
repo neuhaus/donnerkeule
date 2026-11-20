@@ -1,5 +1,0 @@
-RESULT round=3 rank=1 op=WRITE_IMM bytes=20971584 iterations=16 depth=3 persistent_rq=1 late_receives=0 spin_us=5000 us_per_message=6428.002
-PHASE round=3 rank=1 op=WRITE_IMM bytes=20971584 rq_post_us=0.006 gpu_submit_us=8.637 tx_release_us=274.672 ready_us=42.110 wr_post_us=1.174 cq_wait_us=5610.481 rx_release_us=18.073 verify_us=472.849
-VERIFY PASS round=3 rank=1 payload_bytes=1006636032 guard_bytes_per_message=64 tcp_data_calls=0
-PASS rounds=4 MR_and_QP_recreation=1
-CASE smallrail-20971584 exit=0

@@ -1,1 +1,0 @@
-2026-10-08 00:43:35 [INFO] [tp] event=rdma_ready rdma_device=usb4_rdma0 port=1 link=roce_v2 gid_index=1 mtu=4096 cq_spin_us=5000

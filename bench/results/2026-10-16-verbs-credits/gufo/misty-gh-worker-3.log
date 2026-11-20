@@ -1,6 +1,0 @@
-[batched-probe rank1 t=253ms] RDMA peer established on bootstrap port 18515
-[batched-probe rank1 t=253ms] transport rdma_device=usb4_rdma0 port=1 link=roce_v2 gid_index=1 mtu=4096 windows=gpu_send
-[batched-probe rank1 t=334ms] allreduce rows=1 bytes=10240 n=1000 min_us=15.0 p50_us=31.3 mean_us=56.8 p99_us=69.7 verified=1
-[batched-probe rank1 t=394ms] allreduce rows=2 bytes=20480 n=1000 min_us=14.8 p50_us=33.0 mean_us=34.9 p99_us=73.0 verified=1
-[batched-probe rank1 t=489ms] allreduce rows=8 bytes=81920 n=1000 min_us=14.5 p50_us=50.7 mean_us=46.4 p99_us=97.6 verified=1
-[batched-probe rank1 t=3432ms] allreduce rows=512 bytes=5242880 n=1000 min_us=989.6 p50_us=1302.8 mean_us=1338.8 p99_us=1922.2 verified=1

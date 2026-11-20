@@ -125,7 +125,7 @@ Smoke-Suite besteht mit Clang und ASan/UBSan. Der aktualisierte Nix-Plan-Wrapper
 wurde erfolgreich ausgewertet. `git diff --check` besteht.
 
 Buildlogs, lokale Prüfergebnisse und Quellhashes liegen in
-[den Nachweisen](/Users/user/Documents/thunderbolt-ibverbs/bench/results/2026-10-07-refactor/receipt.json).
+[den Nachweisen](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-07-refactor/receipt.json).
 Diese prüfen Übersetzung und simulierte Zustandsverträge. Die anschließende
 Hardwareprüfung ergänzt DMA-, Fehler- und Performanceversuche; ihre Fälle
 und verbleibenden Grenzen sind im verlinkten Hardwarebericht dokumentiert.

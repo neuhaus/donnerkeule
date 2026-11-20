@@ -135,7 +135,7 @@ long-duration production stress remain untested.
   a multiple of 2 MiB.
 
 Raw test output, per-rail counters and full summaries are retained under
-[`2026-10-02-gpu-direct/`](2026-10-02-gpu-direct/), separately for each host.
+[`2026-10-02-gpu-direct/`](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-02-gpu-direct/), separately for each host.
 An earlier successful interrupt-only matrix and the subsequent failed matrix
 are retained as historical evidence, excluded from final cohort totals.
 Run the independent retained-results check with:

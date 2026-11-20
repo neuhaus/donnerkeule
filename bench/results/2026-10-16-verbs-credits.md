@@ -177,7 +177,7 @@ reported. Model throughput and token-level agreement are still unmeasured.
 
 The full verifier matrix, remote-error, RNR-delay and persistent SEND_IMM
 cases passed again with direct posting. Evidence is in
-[gufo/](2026-10-16-verbs-credits/gufo/): logs and debugfs snapshots for
+[gufo/](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-16-verbs-credits/gufo/): logs and debugfs snapshots for
 every run, including those with the rejected early TX-ring kick. Large
 traces are not kept.
 
@@ -197,7 +197,7 @@ traces are not kept.
 
 ## Evidence
 
-[Raw logs, debugfs before/after, traces, scripts and hashes](2026-10-16-verbs-credits/).
+[Raw logs, debugfs before/after, traces, scripts and hashes](https://github.com/neuhaus/donnerkeule-results/tree/main/2026-10-16-verbs-credits/).
 `timings.txt` is the output of `summarize.py`. Rejected states are kept:
 `smoke`–`smoke4` (missing reply bit), `credit2-*` (per-CPU arming delay) and
 `nocredit-sendimm`. The original modules and parameters were restored on both

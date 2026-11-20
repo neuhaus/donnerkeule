@@ -1,3 +1,0 @@
-libibverbs: Warning: couldn't open config directory '/etc/libibverbs.d'.
-LISTEN port=19300
-FAIL: QP RTR: Network is unreachable

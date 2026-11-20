@@ -1,5 +1,0 @@
-RESULT round=3 rank=0 op=WRITE_IMM bytes=1048576 iterations=32 depth=3 persistent_rq=1 late_receives=0 spin_us=5000 us_per_message=500.709
-PHASE round=3 rank=0 op=WRITE_IMM bytes=1048576 rq_post_us=0.014 gpu_submit_us=126.086 tx_release_us=6.425 ready_us=33.620 wr_post_us=2.005 cq_wait_us=271.536 rx_release_us=41.460 verify_us=19.563
-VERIFY PASS round=3 rank=0 payload_bytes=100663296 guard_bytes_per_message=64 tcp_data_calls=0
-PASS rounds=4 MR_and_QP_recreation=1
-CASE host-a-1048576 exit=0

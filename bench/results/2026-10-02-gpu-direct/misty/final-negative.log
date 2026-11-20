@@ -1,2 +1,0 @@
-GPU=AMD Radeon 8060S Graphics arch=gfx1151 HIP=70253211 pool_bytes=12582912 memory=coarse prewarm=1
-PASS timeout/drain/abort/close, 18 negative checks

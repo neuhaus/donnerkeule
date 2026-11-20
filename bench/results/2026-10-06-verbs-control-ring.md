@@ -84,10 +84,10 @@ schließt Interrupts, Worker, Fortschrittstimer und Hintergrundarbeit ein.
 Sie ist kein isoliertes Profil des Treibers. Diese Werte belegen jedenfalls
 keine Entlastung der Gesamt-CPU durch den Prototyp.
 
-Protokolle: [NHI, Peer 1](2026-10-06-verbs-control-ring/fuzzy/v4-nhi-control-p1-r1.result),
-[NHI, Peer 2](2026-10-06-verbs-control-ring/fuzzy/v4-nhi-control-p2-r1.result),
-[XDomain, Peer 1](2026-10-06-verbs-control-ring/fuzzy/v4-xd-control-p1-r1.result),
-[XDomain, Peer 2](2026-10-06-verbs-control-ring/fuzzy/v4-xd-control-p2-r1.result).
+Protokolle: [NHI, Peer 1](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/fuzzy/v4-nhi-control-p1-r1.result),
+[NHI, Peer 2](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/fuzzy/v4-nhi-control-p2-r1.result),
+[XDomain, Peer 1](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/fuzzy/v4-xd-control-p1-r1.result),
+[XDomain, Peer 2](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/fuzzy/v4-xd-control-p2-r1.result).
 Alle Serien, P95/P99/Maximum, CPU-Deltas und Zeiten liegen im Rohdatenordner.
 
 ## Gesamter GPU-Verbs-Austausch
@@ -126,9 +126,9 @@ DRAM-/UMC-Bandbreite wurde nicht gemessen.
 Protokolle jeweils auf beiden Hosts: `v4-nhi-data-*`, `v4-xd-one-data-*`,
 `v4-xd-two-data-*` und `v4-normal-data-*`. Die Profiling-Deltas stehen in
 `*-before.txt` und `*-after.txt`, die Kontrollzähler in `*-peers.txt`.
-[summary.json](2026-10-06-verbs-control-ring/summary.json) enthält Werte,
+[summary.json](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/summary.json) enthält Werte,
 Bereiche und alle verwendeten Rundenmittel;
-[timing-samples.json](2026-10-06-verbs-control-ring/timing-samples.json) enthält
+[timing-samples.json](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/timing-samples.json) enthält
 die RESULT-/PHASE-Zeilen einschließlich gekennzeichneter früherer Versuche.
 
 ## Qualifikation und behobene Fehler
@@ -192,6 +192,6 @@ einen Vergleich unter echter Modelllast.
 
 Die öffentlichen eigenen Protokolle, Quell-/Binary-Prüfsummen und redigierten
 Wiederherstellungsnachweise liegen in
-[fuzzy](2026-10-06-verbs-control-ring/fuzzy/public-results.sha256) und
-[misty](2026-10-06-verbs-control-ring/misty/public-results.sha256).
+[fuzzy](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/fuzzy/public-results.sha256) und
+[misty](https://github.com/neuhaus/donnerkeule-results/blob/main/2026-10-06-verbs-control-ring/misty/public-results.sha256).
 Die privaten Gufo-Inspect-Daten und Signierschlüssel sind darin nicht enthalten.

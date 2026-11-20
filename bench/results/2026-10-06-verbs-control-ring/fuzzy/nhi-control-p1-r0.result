@@ -1,1 +1,0 @@
-peer=1 transport=nhi samples=50000 requested=50000 status=0 mean_ns=16339 min_ns=15399 p50_ns=16110 p95_ns=17569 p99_ns=18120 max_ns=655336

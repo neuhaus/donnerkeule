@@ -1,4 +1,0 @@
-GPU=AMD Radeon 8060S Graphics arch=gfx1151 HIP=70253211 pool_bytes=4194304 memory=coarse prewarm=1
-LISTEN port=19875
-rail[0]=peer1/0 local_path=8 remote_path=8
-PASS rank=0 bytes=1048576 exchanges=128 rails=1 bad_words=0 checksum=3fcfe65c6d0ad dma_us=647.94 verified_exchange_us=876.00 local_tx_GBps=1.618

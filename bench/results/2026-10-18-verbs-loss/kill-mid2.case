@@ -1,7 +1,0 @@
-CASE kill-mid2 rank0=137 rank1=1
-BOOTSTRAP round=2 qpn=2311 peer_qpn=2311 tcp_bytes=200 then_closed=1
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1
-FAIL: CQ error: Work Request Flushed Error wr_id=208416
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 75161 dmabuf_credit_committed: 44740 dmabuf_credit_adopted: 30420 dmabuf_credit_released: 1 dmabuf_credit_canceled: 1 dmabuf_credit_aborted: 0 dmabuf_credit_used: 52196 dmabuf_credit_returned: 1 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 45862 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 75462 dmabuf_credit_committed: 52196 dmabuf_credit_adopted: 23265 dmabuf_credit_released: 1 dmabuf_credit_canceled: 1 dmabuf_credit_aborted: 0 dmabuf_credit_used: 44740 dmabuf_credit_returned: 1 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 31769 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 

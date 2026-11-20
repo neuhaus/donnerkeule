@@ -1,1 +1,0 @@
-peer=2 transport=xdomain samples=50000 requested=50000 status=0 mean_ns=17667 min_ns=17030 p50_ns=17540 p95_ns=18679 p99_ns=19259 max_ns=576509

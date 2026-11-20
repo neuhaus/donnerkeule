@@ -1,8 +1,0 @@
-CASE done-drop5 rank0=0 rank1=0
-VERIFY PASS round=1 rank=0 payload_bytes=1318912 guard_bytes_per_message=64 tcp_data_calls=0
-PASS rounds=2 MR_and_QP_recreation=1
-VERIFY PASS round=1 rank=1 payload_bytes=1318912 guard_bytes_per_message=64 tcp_data_calls=0
-PASS rounds=2 MR_and_QP_recreation=1
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 251 dmabuf_credit_committed: 174 dmabuf_credit_adopted: 77 dmabuf_credit_released: 0 dmabuf_credit_canceled: 0 dmabuf_credit_aborted: 0 dmabuf_credit_used: 143 dmabuf_credit_returned: 0 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 119 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 245 dmabuf_credit_committed: 143 dmabuf_credit_adopted: 102 dmabuf_credit_released: 0 dmabuf_credit_canceled: 0 dmabuf_credit_aborted: 0 dmabuf_credit_used: 174 dmabuf_credit_returned: 0 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 123 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 
-elapsed=5s

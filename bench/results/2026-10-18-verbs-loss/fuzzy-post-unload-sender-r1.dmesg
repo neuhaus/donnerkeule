@@ -1,4 +1,0 @@
-[125972.387199] infiniband usb4_rdma1: Couldn't create ib_mad QP1
-[125972.387221] infiniband usb4_rdma1: Couldn't open port 1
-[125972.388485] ib_srpt usb4_rdma1-1: MAD agent registration failed (-ENODEV). Note: this is expected if SR-IOV is enabled.
-[125972.388662] thunderbolt_ibverbs: registered native ib_device usb4_rdma1 rail=peer2/1 domain=0 guid=0200544258524254

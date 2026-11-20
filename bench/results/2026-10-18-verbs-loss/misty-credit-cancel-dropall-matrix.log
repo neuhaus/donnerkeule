@@ -1,8 +1,0 @@
-IMPORT PASS cases=8 nonzero_fd_offset=4096
-BOOTSTRAP round=0 qpn=2304 peer_qpn=2304 tcp_bytes=200 then_closed=1
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1
-RESULT round=0 rank=1 op=SEND bytes=0 iterations=8 depth=3 persistent_rq=0 late_receives=0 spin_us=0 profiled=0 us_per_message=720.682
-PHASE round=0 rank=1 op=SEND bytes=0 rq_post_us=0.013 gpu_submit_us=31.912 tx_release_us=28.985 ready_us=0.759 wr_post_us=2.218 cq_wait_us=594.323 rx_release_us=24.843 verify_us=37.630
-RESULT round=0 rank=1 op=SEND bytes=32 iterations=8 depth=3 persistent_rq=0 late_receives=0 spin_us=0 profiled=0 us_per_message=526.119
-PHASE round=0 rank=1 op=SEND bytes=32 rq_post_us=0.009 gpu_submit_us=8.045 tx_release_us=22.658 ready_us=1.207 wr_post_us=2.681 cq_wait_us=434.364 rx_release_us=19.237 verify_us=37.919
-FAIL: CQ error: Work Request Flushed Error wr_id=49

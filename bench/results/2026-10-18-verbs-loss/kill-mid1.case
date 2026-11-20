@@ -1,7 +1,0 @@
-CASE kill-mid1 rank0=1 rank1=137
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1
-FAIL: verbs CQ timed out
-BOOTSTRAP round=4 qpn=2308 peer_qpn=2308 tcp_bytes=200 then_closed=1
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 47141 dmabuf_credit_committed: 24399 dmabuf_credit_adopted: 22741 dmabuf_credit_released: 1 dmabuf_credit_canceled: 1 dmabuf_credit_aborted: 0 dmabuf_credit_used: 28842 dmabuf_credit_returned: 0 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 25309 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 
-dmabuf_credit_max: 1048576 dmabuf_credit_granted: 47119 dmabuf_credit_committed: 28842 dmabuf_credit_adopted: 18277 dmabuf_credit_released: 0 dmabuf_credit_canceled: 0 dmabuf_credit_aborted: 0 dmabuf_credit_used: 24399 dmabuf_credit_returned: 1 dmabuf_credit_stale: 0 dmabuf_credit_mismatch: 0 dmabuf_credit_direct: 21520 data_tx_credit_stalls: 0 data_tx_credit_received: 0 data_rx_credit_sent: 0 data_rx_credit_send_error: 0 

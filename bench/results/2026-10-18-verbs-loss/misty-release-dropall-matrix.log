@@ -1,8 +1,0 @@
-IMPORT PASS cases=8 nonzero_fd_offset=4096
-BOOTSTRAP round=0 qpn=2304 peer_qpn=2304 tcp_bytes=200 then_closed=1
-POST PASS unaligned_gpu_sge=1 sub_32_byte_length=1 foreign_PD=1
-RESULT round=0 rank=1 op=SEND bytes=0 iterations=8 depth=3 persistent_rq=0 late_receives=0 spin_us=0 profiled=0 us_per_message=840.712
-PHASE round=0 rank=1 op=SEND bytes=0 rq_post_us=0.011 gpu_submit_us=29.514 tx_release_us=33.411 ready_us=0.745 wr_post_us=1.734 cq_wait_us=720.539 rx_release_us=22.290 verify_us=32.470
-RESULT round=0 rank=1 op=SEND bytes=32 iterations=8 depth=3 persistent_rq=0 late_receives=0 spin_us=0 profiled=0 us_per_message=278.878
-PHASE round=0 rank=1 op=SEND bytes=32 rq_post_us=0.008 gpu_submit_us=5.738 tx_release_us=20.242 ready_us=1.007 wr_post_us=2.901 cq_wait_us=210.557 rx_release_us=16.969 verify_us=21.456
-FAIL: verbs CQ timed out

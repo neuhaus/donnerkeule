@@ -1,6 +1,0 @@
-Transport: 7 cohorts x 2 hosts x 8 shapes; mismatch abort; arithmetic and errors=0 verified.
-Model: all four runs have identical step membership, full-logit hashes and generated tokens.
-Model generation stopped at EOS after 1 and 3 tokens; NOT a tg128 speed result.
-Overlap: aligned 2048-token runs match old direct and verbs full-logit/token signatures.
-Overlap: 383/385-token threshold and ragged halves match on both ranks and transports.
-Overlap 32k: full-logit/token signatures, token and exchange counts match.

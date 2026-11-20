@@ -1,4 +1,0 @@
-transport=donnerkeule experimental=1 rails=4 tx=coarse_dmabuf rx=uncached_dmabuf windows=3 window_bytes=33554432 queued=0 payload_bytes=0 dma_batches=0 cpu_payload_copies=0
-Donnerkeule collective scope/ordinal/shape mismatch
-transport=donnerkeule experimental=1 rails=4 tx=coarse_dmabuf rx=uncached_dmabuf windows=3 window_bytes=33554432 queued=0 payload_bytes=0 dma_batches=0 cpu_payload_copies=0
-expected_collective_mismatch=1

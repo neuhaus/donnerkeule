@@ -1,6 +1,0 @@
-libibverbs: Warning: couldn't open config directory '/etc/libibverbs.d'.
-IMPORT PASS cases=8 nonzero_fd_offset=4096
-BOOTSTRAP round=0 qpn=2304 peer_qpn=2304 tcp_bytes=152 then_closed=1
-POST PASS unaligned_gpu_sge=1 foreign_PD=1
-RESULT round=0 rank=1 op=SEND bytes=0 iterations=2 depth=3 us_per_message=17862.720
-FAIL: GPU payload/guard mismatch: 93

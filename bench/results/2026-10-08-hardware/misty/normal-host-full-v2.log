@@ -1,2 +1,0 @@
-libibverbs: Warning: couldn't open config directory '/etc/libibverbs.d'.
-FAIL: QP RTR: Network is unreachable

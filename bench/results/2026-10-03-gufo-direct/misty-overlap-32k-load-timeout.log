@@ -1,4 +1,0 @@
-[batched-probe rank1 t=42ms] RDMA peer established on bootstrap port 18515
-[batched-probe rank1 t=42ms] batched decode of 2 members
-[batched-probe rank1 t=61311ms] batched scope bound: 1, prefill_capacity=4096 budget=8
-[batched-probe t=61377ms] rank1 member 0 batched prefill failed: bootstrap send: Broken pipe

@@ -1,9 +1,0 @@
-GPU=AMD Radeon 8060S Graphics arch=gfx1151 HIP=70253211 pool_bytes=12582912 memory=coarse prewarm=1
-rail[0]=peer2/0 local_path=8 remote_path=8
-rail[1]=peer2/1 local_path=9 remote_path=9
-rail[2]=peer1/0 local_path=8 remote_path=8
-rail[3]=peer1/1 local_path=9 remote_path=9
-PASS rank=1 bytes=16384 exchanges=128 rails=4 bad_words=0 checksum=13f4762bd5 dma_us=25.04 verified_exchange_us=164.78 local_tx_GBps=0.654
-PASS rank=1 bytes=65536 exchanges=128 rails=4 bad_words=0 checksum=15cebba3aa dma_us=34.14 verified_exchange_us=150.14 local_tx_GBps=1.920
-PASS rank=1 bytes=266240 exchanges=128 rails=4 bad_words=0 checksum=3f988ab92f0 dma_us=73.84 verified_exchange_us=221.66 local_tx_GBps=3.606
-FAIL: DMA completion failed: status=-110 bytes=0

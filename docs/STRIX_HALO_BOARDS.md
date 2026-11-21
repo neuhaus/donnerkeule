@@ -55,34 +55,28 @@ ttm.pages_limit=32505856`. IOMMU-enabled operation is not qualified.
 
 ## Options
 
-These come on top of the two-cable DMA-BUF verbs options (`profile=linux_perf
-tbnet=prefer_rdma lanes=2 register_verbs=1 native_write_striping=1
-dmabuf_verbs=1 dmabuf_push_done=1 dmabuf_credits=1 roce_netdev=...`):
+All Strix Halo optimizations are compiled on by default, so `/etc/modprobe.d/thunderbolt-ibverbs.conf` only needs:
 
 ```text
-dmabuf_batch_doorbell=1 dmabuf_post_burst=128 dmabuf_coalesce_copy=1
-dmabuf_reuse_buffers=1 dmabuf_host_direct=1 dmabuf_host_credits=1
-dmabuf_host_direct_min_bytes=4096
+blacklist thunderbolt_net
+options thunderbolt_ibverbs roce_netdev=tbv0
 ```
 
-On the Framework Desktop the fork also qualified the completion fallback
-timer, `dmabuf_poll_us=25 dmabuf_poll_control=1`. On the AXB35 it passes the
-same checks and raises host-memory bandwidth slightly (43 vs 39 Gb/s), but did
-not improve Gufo and had the larger spread at 2 concurrent requests, so the
-AXB35 hosts run without it. All options default to off (or the earlier
-behavior), so a module loaded without them behaves like before.
+That enables `dmabuf_verbs=1`, `lanes=2`, `dmabuf_batch_doorbell=auto` (128-frame burst on AMD `158d/158e`), `dmabuf_push_done=1`, `dmabuf_credits=1`, `dmabuf_coalesce_copy=1`, `dmabuf_reuse_buffers=1`, `dmabuf_host_direct=1`, `dmabuf_host_credits=1`, and `dmabuf_host_direct_min_bytes=4096`.
 
-| Option | Effect |
-|---|---|
-| `dmabuf_batch_doorbell=1` | Publish a group of data-ring descriptors with one MMIO doorbell write, on AMD 158d/158e NHIs only; other rings fall back to `tb_ring_tx/rx()` |
-| `dmabuf_post_burst=N` | Frames posted per rail before moving to the sibling rail (1–512, default 16) |
-| `dmabuf_coalesce_copy=1` | Copy each host-staged TX lane once instead of per 4 KiB frame |
-| `dmabuf_reuse_buffers=1` | Keep one drained descriptor/staging batch per rail and direction (at most 2 MiB staging each) |
-| `dmabuf_host_direct=1` | Map page-aligned pinned host MRs straight to each NHI instead of staging them |
-| `dmabuf_host_direct_min_bytes=N` | Smallest direct host transfer (4096–65536, default 65536) |
-| `dmabuf_host_credits=1` | Pre-arm SEND credits for direct host MRs too, not only GPU MRs |
-| `dmabuf_poll_us=N` | Fallback timer that runs the ordinary ring workers every N µs while batches are in flight (10–10000, 0 off) |
-| `dmabuf_poll_control=1` | Keep that timer running while any QP exists and also progress the XDomain control rings |
+To override individual tuning knobs (for example `dmabuf_poll_us=25 dmabuf_poll_control=1` on the Framework Desktop), build with `TBV_DEV_PARAMS=1`:
+
+| Option (`TBV_DEV_PARAMS=1`) | Default | Effect |
+|---|---|---|
+| `dmabuf_batch_doorbell` | `auto` | Publish a group of data-ring descriptors with one MMIO doorbell write on AMD `158d/158e` NHIs; falls back to `tb_ring_tx/rx()` elsewhere |
+| `dmabuf_post_burst` | `0` (128 with bulk doorbell) | Frames posted per rail before moving to the sibling rail (1–512) |
+| `dmabuf_coalesce_copy` | `1` | Copy each host-staged TX lane once instead of per 4 KiB frame |
+| `dmabuf_reuse_buffers` | `1` | Keep one drained descriptor/staging batch per rail and direction (at most 2 MiB staging each) |
+| `dmabuf_host_direct` | `1` | Map page-aligned pinned host MRs straight to each NHI instead of staging them |
+| `dmabuf_host_direct_min_bytes` | `4096` | Smallest direct host transfer (4096–65536) |
+| `dmabuf_host_credits` | `1` | Pre-arm SEND credits for direct host MRs too, not only GPU MRs |
+| `dmabuf_poll_us` | `0` | Fallback timer that runs the ordinary ring workers every N µs while batches are in flight (10–10000, 0 off) |
+| `dmabuf_poll_control` | `0` | Keep that timer running while any QP exists and also progress the XDomain control rings |
 
 Normal QP close now drains accepted work for up to 2 s before cancelling, and
 DMA-BUF mode no longer advertises MAD/CM, so the per-rail `Couldn't create

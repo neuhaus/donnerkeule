@@ -34,8 +34,8 @@ sudo pacman -S --needed base-devel dkms git kmod linux-headers rdma-core perftes
 ### 2. Build and install the kernel module
 
 ```sh
-git clone https://github.com/neuhaus/thunderbolt-ibverbs.git
-cd thunderbolt-ibverbs
+git clone https://github.com/neuhaus/donnerkeule.git
+cd donnerkeule
 
 sudo make dkms-add
 sudo make dkms-build

@@ -7335,7 +7335,6 @@ static int tbv_send_read_response_ctx(struct tbv_read_resp_ctx *ctx)
 					      TBV_NATIVE_DATA_MAX_PAYLOAD) : 1;
 	u32 offset = 0;
 	u32 remaining = nfrags;
-	bool sent_any = false;
 	bool selected_ref = false;
 	int ret = 0;
 
@@ -7353,7 +7352,10 @@ static int tbv_send_read_response_ctx(struct tbv_read_resp_ctx *ctx)
 		for (;;) {
 			ret = tbv_path_claim_tx_frames(path, chunk_frags,
 						       &frames);
-			if (ret != -ENOMEM || !sent_any || ++wait_tries > 200)
+			if (ret != -ENOMEM ||
+			    READ_ONCE(tqp->closing) ||
+			    READ_ONCE(tqp->state) == IB_QPS_ERR ||
+			    ++wait_tries > 2000)
 				break;
 			tbv_path_kick_tx(path);
 			usleep_range(50, 150);
@@ -7401,7 +7403,6 @@ static int tbv_send_read_response_ctx(struct tbv_read_resp_ctx *ctx)
 			goto out_put_path;
 
 		remaining -= chunk_frags;
-		sent_any = true;
 	}
 
 	if (selected_ref)

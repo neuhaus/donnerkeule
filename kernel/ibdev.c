@@ -351,6 +351,7 @@ struct tbv_qp {
 	struct completion refs_zero;
 	struct list_head pending_sends;
 	struct list_head pending_reads;
+	u32 reads_inflight;
 	struct list_head pending_read_resps;
 	struct work_struct error_work;
 	struct delayed_work timeout_work;
@@ -458,6 +459,8 @@ struct tbv_read_ctx {
 	struct mutex data_lock;
 	unsigned long queued_jiffies;
 	u64 wr_id;
+	u64 remote_addr;
+	u32 rkey;
 	u32 psn;
 	u32 total_len;
 	u32 received;
@@ -467,6 +470,7 @@ struct tbv_read_ctx {
 	bool signaled;
 	bool completed;
 	bool ready;
+	bool dispatched;
 	bool sq_counted;
 	bool retry_sent;
 	struct list_head resp_frags;
@@ -1339,6 +1343,11 @@ static bool tbv_qp_unqueue_read(struct tbv_qp *tqp, struct tbv_read_ctx *read)
 		if (pos != read)
 			continue;
 		list_del_init(&read->node);
+		if (read->dispatched) {
+			read->dispatched = false;
+			if (tqp->reads_inflight)
+				tqp->reads_inflight--;
+		}
 		tbv_qp_release_sendq_counted_locked(tqp, &read->sq_counted);
 		found = true;
 		break;
@@ -1378,6 +1387,11 @@ static bool tbv_qp_complete_read_ordered(struct tbv_qp *tqp,
 		if (!pos->ready)
 			break;
 		list_move_tail(&pos->node, &complete);
+		if (pos->dispatched) {
+			pos->dispatched = false;
+			if (tqp->reads_inflight)
+				tqp->reads_inflight--;
+		}
 		tbv_qp_release_sendq_counted_locked(tqp, &pos->sq_counted);
 	}
 	spin_unlock_irqrestore(&tqp->lock, flags);
@@ -1565,8 +1579,11 @@ static void tbv_qp_flush_reads(struct tbv_qp *tqp, struct list_head *flush)
 	struct tbv_read_ctx *read;
 
 	spin_lock_irqsave(&tqp->lock, flags);
-	list_for_each_entry(read, &tqp->pending_reads, node)
+	list_for_each_entry(read, &tqp->pending_reads, node) {
+		read->dispatched = false;
 		tbv_qp_release_sendq_counted_locked(tqp, &read->sq_counted);
+	}
+	tqp->reads_inflight = 0;
 	list_splice_init(&tqp->pending_reads, flush);
 	spin_unlock_irqrestore(&tqp->lock, flags);
 }
@@ -3126,6 +3143,11 @@ static bool tbv_qp_timeout_reap_tx(struct tbv_qp *tqp,
 		}
 		if (!tbv_qp_entry_expired(read->queued_jiffies, now, timeout))
 			continue;
+		if (read->dispatched) {
+			read->dispatched = false;
+			if (tqp->reads_inflight)
+				tqp->reads_inflight--;
+		}
 		tbv_qp_release_sendq_counted_locked(tqp, &read->sq_counted);
 		list_move_tail(&read->node, timed_out_reads);
 	}
@@ -4444,20 +4466,111 @@ static int tbv_native_send_ctx_post_frames(struct tbv_send_ctx *ctx,
 	return 0;
 }
 
+static u32 tbv_qp_read_limit(const struct tbv_qp *tqp)
+{
+	u32 limit = tqp->attr.max_rd_atomic;
+
+	return limit ? min_t(u32, limit, TBV_IBDEV_MAX_QP_RD_ATOM) :
+		       TBV_IBDEV_MAX_QP_RD_ATOM;
+}
+
+static int tbv_qp_dispatch_pending_reads(struct tbv_qp *tqp,
+					 struct tbv_read_ctx *initial)
+{
+	u32 limit = tbv_qp_read_limit(tqp);
+	int initial_ret = 0;
+
+	for (;;) {
+		struct tbv_native_data_header hdr = {};
+		u8 frame[TBV_NATIVE_DATA_HDR_SIZE];
+		struct tbv_read_ctx *read = NULL;
+		struct tbv_read_ctx *pos;
+		struct tbv_path *path;
+		unsigned long flags;
+		int len;
+		int ret;
+
+		spin_lock_irqsave(&tqp->lock, flags);
+		if (!tqp->closing && tqp->state != IB_QPS_ERR &&
+		    tqp->reads_inflight < limit) {
+			list_for_each_entry(pos, &tqp->pending_reads, node) {
+				if (pos->dispatched || pos->ready)
+					continue;
+				pos->dispatched = true;
+				tqp->reads_inflight++;
+				tbv_read_ctx_get(pos);
+				read = pos;
+				break;
+			}
+		}
+		spin_unlock_irqrestore(&tqp->lock, flags);
+		if (!read)
+			break;
+
+		hdr.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_REQ;
+		hdr.flags = TBV_NATIVE_DATA_F_LAST;
+		hdr.dest_qp = tqp->attr.dest_qp_num;
+		hdr.src_qp = tqp->base.qp_num;
+		hdr.psn = read->psn;
+		hdr.imm_data = read->total_len;
+		hdr.remote_addr = read->remote_addr;
+		hdr.rkey = read->rkey;
+
+		len = tbv_native_data_build_header(frame, sizeof(frame), &hdr);
+		if (len < 0) {
+			ret = len;
+			goto err_read;
+		}
+
+		mutex_lock(&tqp->owner->lock);
+		path = tbv_select_native_data_path_for_qp_locked(tqp);
+		mutex_unlock(&tqp->owner->lock);
+		if (!path) {
+			atomic64_inc(&tqp->owner->data_wr_no_path);
+			ret = -ENOTCONN;
+			goto err_read;
+		}
+
+		tbv_read_ctx_get(read);
+		atomic64_inc(&tqp->owner->data_wr_path_send);
+		ret = tbv_path_send(path, frame, len, 0, tbv_read_tx_done,
+				    read);
+		tbv_release_path_refs(&path, 1);
+		if (ret) {
+			tbv_read_ctx_put(read);
+			atomic64_inc(&tqp->owner->data_wr_path_send_error);
+			goto err_read;
+		}
+		tbv_read_ctx_put(read);
+		continue;
+
+err_read:
+		if (read == initial) {
+			tbv_qp_unqueue_read(tqp, read);
+			tbv_read_ctx_put(read);
+			initial_ret = ret;
+			break;
+		}
+		if (tbv_qp_unqueue_read(tqp, read)) {
+			tbv_read_complete(read, ret);
+			tbv_read_ctx_put(read);
+		}
+		tbv_read_ctx_put(read);
+		break;
+	}
+	return initial_ret;
+}
+
 static int tbv_post_rdma_read(struct tbv_qp *tqp, const struct ib_send_wr *wr)
 {
 	struct tbv_read_segment segs[TBV_IBDEV_MAX_SGE];
 	const struct ib_rdma_wr *rwr = rdma_wr(wr);
-	struct tbv_native_data_header hdr = {};
 	struct tbv_read_ctx *ctx;
-	struct tbv_path *path;
 	unsigned long flags;
 	u32 total_len = 0;
 	u64 remote_end;
-	u8 *frame;
 	u32 psn;
 	int nsegs = 0;
-	int len;
 	int ret;
 
 	if (!tbv_qp_has_dest_qp(tqp))
@@ -4488,10 +4601,12 @@ static int tbv_post_rdma_read(struct tbv_qp *tqp, const struct ib_send_wr *wr)
 	}
 	ctx->tqp = tqp;
 	refcount_set(&ctx->refs, 1);
-		spin_lock_init(&ctx->lock);
-		mutex_init(&ctx->data_lock);
-		INIT_LIST_HEAD(&ctx->resp_frags);
-		ctx->wr_id = wr->wr_id;
+	spin_lock_init(&ctx->lock);
+	mutex_init(&ctx->data_lock);
+	INIT_LIST_HEAD(&ctx->resp_frags);
+	ctx->wr_id = wr->wr_id;
+	ctx->remote_addr = rwr->remote_addr;
+	ctx->rkey = rwr->rkey;
 	ctx->signaled = !!(wr->send_flags & IB_SEND_SIGNALED);
 	ctx->total_len = total_len;
 	ctx->nsegs = nsegs;
@@ -4510,50 +4625,10 @@ static int tbv_post_rdma_read(struct tbv_qp *tqp, const struct ib_send_wr *wr)
 	spin_unlock_irqrestore(&tqp->lock, flags);
 	ctx->psn = psn;
 
-	frame = kzalloc(TBV_NATIVE_DATA_HDR_SIZE, GFP_KERNEL);
-	if (!frame) {
-		ret = -ENOMEM;
-		goto err_put_ctx;
-	}
-
-	hdr.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_REQ;
-	hdr.flags = TBV_NATIVE_DATA_F_LAST;
-	hdr.dest_qp = tqp->attr.dest_qp_num;
-	hdr.src_qp = tqp->base.qp_num;
-	hdr.psn = psn;
-	hdr.imm_data = total_len;
-	hdr.remote_addr = rwr->remote_addr;
-	hdr.rkey = rwr->rkey;
-
-	len = tbv_native_data_build_header(frame, TBV_NATIVE_DATA_HDR_SIZE,
-					   &hdr);
-	if (len < 0) {
-		kfree(frame);
-		ret = len;
-		goto err_put_ctx;
-	}
-
-	mutex_lock(&tqp->owner->lock);
-	path = tbv_select_native_data_path_for_qp_locked(tqp);
-	mutex_unlock(&tqp->owner->lock);
-	if (!path) {
-		kfree(frame);
-		atomic64_inc(&tqp->owner->data_wr_no_path);
-		ret = -ENOTCONN;
-		goto err_put_ctx;
-	}
-
 	tbv_qp_queue_read(tqp, ctx);
-	tbv_read_ctx_get(ctx);
-	atomic64_inc(&tqp->owner->data_wr_path_send);
-	ret = tbv_path_send_owned(path, frame, len, 0, tbv_read_tx_done, ctx);
-	tbv_release_path_refs(&path, 1);
-	if (ret) {
-		tbv_read_ctx_put(ctx);
-		tbv_qp_unqueue_read(tqp, ctx);
-		atomic64_inc(&tqp->owner->data_wr_path_send_error);
+	ret = tbv_qp_dispatch_pending_reads(tqp, ctx);
+	if (ret)
 		goto err_put_ctx;
-	}
 
 	atomic64_inc(&tqp->owner->data_tx_accepted);
 	return 0;
@@ -7740,6 +7815,7 @@ complete_ack:
 	tbv_qp_complete_read_ordered(tqp, read, ret);
 	mutex_unlock(&read->data_lock);
 	tbv_read_ctx_put(read);
+	tbv_qp_dispatch_pending_reads(tqp, NULL);
 }
 
 static void tbv_rx_handle_mad(struct tbv_state *state, struct tbv_path *rx_path,

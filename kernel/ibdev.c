@@ -45,6 +45,7 @@
 #define TBV_IBDEV_MAX_CQ 256
 #define TBV_IBDEV_MAX_SGE 4
 #define TBV_IBDEV_MAX_READ_CTX 128
+#define TBV_IBDEV_MAX_QP_RD_ATOM 16
 #define TBV_IBDEV_QPN_MIN 0x900
 #define TBV_IBDEV_QPN_MAX 0x00ffffff
 #define TBV_IBDEV_PAGE_SIZE_CAP (SZ_4K | SZ_2M | SZ_1G)
@@ -2007,9 +2008,9 @@ static int tbv_query_device(struct ib_device *ibdev,
 	attr->max_cqe = TBV_IBDEV_MAX_CQE;
 	attr->max_mr = 1024;
 	attr->max_pd = 256;
-	attr->max_qp_rd_atom = TBV_IBDEV_MAX_READ_CTX;
-	attr->max_res_rd_atom = TBV_IBDEV_MAX_QP * TBV_IBDEV_MAX_READ_CTX;
-	attr->max_qp_init_rd_atom = TBV_IBDEV_MAX_READ_CTX;
+	attr->max_qp_rd_atom = TBV_IBDEV_MAX_QP_RD_ATOM;
+	attr->max_res_rd_atom = TBV_IBDEV_MAX_QP * TBV_IBDEV_MAX_QP_RD_ATOM;
+	attr->max_qp_init_rd_atom = TBV_IBDEV_MAX_QP_RD_ATOM;
 	attr->atomic_cap = IB_ATOMIC_NONE;
 	attr->max_pkeys = 1;
 	attr->local_ca_ack_delay = 15;
@@ -3860,6 +3861,7 @@ static void tbv_send_ctx_build_native_header(struct tbv_send_ctx *ctx,
 struct tbv_send_build_job {
 	struct list_head node;
 	struct tbv_send_ctx *send;
+	struct tbv_read_resp_ctx *read_resp;
 	struct tbv_path *path;
 	u32 first_frag;
 	u32 frag_stride;
@@ -4026,6 +4028,89 @@ static struct workqueue_struct *tbv_send_build_wq(struct tbv_send_ctx *ctx)
 	return owner->workqueue ? owner->workqueue : system_unbound_wq;
 }
 
+static int tbv_read_resp_build_chunk(struct tbv_read_resp_ctx *ctx,
+				     struct tbv_path *path, u32 first_frag,
+				     u32 nfrags)
+{
+	const struct tbv_native_data_header *req = &ctx->req;
+	u32 total_len = req->imm_data;
+	struct tbv_data_frame *f;
+	LIST_HEAD(frames);
+	u32 i = 0;
+	int ret;
+
+	ret = tbv_path_claim_tx_frames(path, nfrags, &frames);
+	if (ret == -ENOMEM)
+		return -EAGAIN;
+	if (ret)
+		return ret;
+
+	list_for_each_entry(f, &frames, node) {
+		struct tbv_native_data_header resp = {};
+		u32 offset = (first_frag + i) * TBV_NATIVE_DATA_MAX_PAYLOAD;
+		u32 payload_len = min_t(u32, total_len - offset,
+					TBV_NATIVE_DATA_MAX_PAYLOAD);
+		u32 packet_len = TBV_NATIVE_DATA_HDR_SIZE + payload_len;
+		bool last = offset + payload_len == total_len;
+		int len;
+
+		if (payload_len)
+			memcpy((u8 *)f->buf + TBV_NATIVE_DATA_HDR_SIZE,
+			       (u8 *)ctx->data + offset, payload_len);
+
+		resp.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_RESP;
+		resp.flags = last ? TBV_NATIVE_DATA_F_LAST : 0;
+		resp.dest_qp = req->src_qp;
+		resp.src_qp = req->dest_qp;
+		resp.psn = req->psn;
+		resp.length = payload_len;
+		resp.imm_data = total_len;
+		resp.remote_addr = 0;
+		resp.frag_offset = offset;
+
+		len = tbv_native_data_build_header(f->buf, packet_len, &resp);
+		if (len < 0) {
+			tbv_path_release_tx_frames(path, &frames);
+			return len;
+		}
+		f->len = packet_len;
+		f->sof = TBV_DATA_PDF_FRAME_START;
+		f->eof = TBV_DATA_PDF_FRAME_END;
+		i++;
+	}
+
+	return tbv_path_enqueue_tx_frames(path, &frames, nfrags, 0);
+}
+
+static bool tbv_read_resp_run_build_job(struct tbv_send_build_job *job)
+{
+	struct tbv_read_resp_ctx *ctx = job->read_resp;
+	struct tbv_qp *tqp = ctx->tqp;
+	u32 done = 0;
+
+	while (done < job->nfrags) {
+		u32 n = min_t(u32, job->nfrags - done, TBV_SEND_BUILD_CHUNK);
+		int ret;
+
+		if (READ_ONCE(ctx->closing) || READ_ONCE(tqp->closing) ||
+		    READ_ONCE(tqp->state) == IB_QPS_ERR)
+			return false;
+
+		ret = tbv_read_resp_build_chunk(ctx, job->path,
+						job->first_frag + done, n);
+		if (ret == -EAGAIN) {
+			job->first_frag += done;
+			job->nfrags -= done;
+			atomic64_inc(&tqp->owner->data_wr_block_deferred);
+			return true;
+		}
+		if (ret)
+			return false;
+		done += n;
+	}
+	return false;
+}
+
 void tbv_ibdev_path_build_work(struct work_struct *work)
 {
 	struct tbv_path *path = container_of(to_delayed_work(work),
@@ -4036,6 +4121,8 @@ void tbv_ibdev_path_build_work(struct work_struct *work)
 	LIST_HEAD(done);
 
 	for (;;) {
+		bool deferred;
+
 		spin_lock_irqsave(&path->build_lock, flags);
 		job = list_first_entry_or_null(&path->build_jobs,
 					       struct tbv_send_build_job, node);
@@ -4044,7 +4131,10 @@ void tbv_ibdev_path_build_work(struct work_struct *work)
 		spin_unlock_irqrestore(&path->build_lock, flags);
 		if (!job)
 			break;
-		if (tbv_native_send_run_build_job(job)) {
+		deferred = job->read_resp ?
+			   tbv_read_resp_run_build_job(job) :
+			   tbv_native_send_run_build_job(job);
+		if (deferred) {
 			u32 needed = min_t(u32, job->nfrags,
 					   TBV_SEND_BUILD_CHUNK);
 
@@ -4069,7 +4159,10 @@ void tbv_ibdev_path_build_work(struct work_struct *work)
 	 */
 	list_for_each_entry_safe(job, tmp, &done, node) {
 		list_del(&job->node);
-		tbv_send_ctx_put(job->send);
+		if (job->send)
+			tbv_send_ctx_put(job->send);
+		if (job->read_resp)
+			tbv_read_resp_ctx_put(job->read_resp);
 		tbv_release_path_refs(&job->path, 1);
 		kfree(job);
 	}
@@ -4116,7 +4209,7 @@ static void tbv_native_send_queue_blocks(struct tbv_send_ctx *ctx,
 			tbv_release_path_refs(&paths[p], 1);
 			continue;
 		}
-		job = kmalloc(sizeof(*job), GFP_KERNEL);
+		job = kzalloc(sizeof(*job), GFP_KERNEL);
 		if (!job) {
 			u32 done = 0;
 
@@ -7326,93 +7419,46 @@ tbv_read_resp_ctx_alloc(struct tbv_qp *tqp, struct tbv_mr *mr,
 
 static int tbv_send_read_response_ctx(struct tbv_read_resp_ctx *ctx)
 {
-	struct tbv_path *path;
-		struct tbv_qp *tqp = ctx->tqp;
-		struct tbv_state *state = tqp->owner;
-		const struct tbv_native_data_header *req = &ctx->req;
-		u32 total_len = req->imm_data;
+	struct tbv_qp *tqp = ctx->tqp;
+	struct tbv_state *state = tqp->owner;
+	const struct tbv_native_data_header *req = &ctx->req;
+	u32 total_len = req->imm_data;
 	u32 nfrags = total_len ? DIV_ROUND_UP(total_len,
 					      TBV_NATIVE_DATA_MAX_PAYLOAD) : 1;
-	u32 offset = 0;
-	u32 remaining = nfrags;
+	struct tbv_send_build_job *job;
+	struct tbv_path *path;
+	unsigned long flags;
 	bool selected_ref = false;
-	int ret = 0;
 
 	path = tbv_select_read_response_path(state, tqp, ctx->rx_path,
 					     &selected_ref);
 	if (!path)
 		return -ENOTCONN;
-
-	while (remaining) {
-		u32 chunk_frags = min_t(u32, remaining, TBV_SEND_BUILD_CHUNK);
-		struct tbv_data_frame *f;
-		LIST_HEAD(frames);
-		u32 wait_tries = 0;
-
-		for (;;) {
-			ret = tbv_path_claim_tx_frames(path, chunk_frags,
-						       &frames);
-			if (ret != -ENOMEM ||
-			    READ_ONCE(tqp->closing) ||
-			    READ_ONCE(tqp->state) == IB_QPS_ERR ||
-			    ++wait_tries > 2000)
-				break;
-			tbv_path_kick_tx(path);
-			usleep_range(50, 150);
-		}
-		if (ret)
-			goto out_put_path;
-
-		list_for_each_entry(f, &frames, node) {
-			struct tbv_native_data_header resp = {};
-			u32 payload_len = min_t(u32, total_len - offset,
-						TBV_NATIVE_DATA_MAX_PAYLOAD);
-			u32 packet_len = TBV_NATIVE_DATA_HDR_SIZE + payload_len;
-			bool last = offset + payload_len == total_len;
-			int len;
-
-			if (payload_len)
-				memcpy((u8 *)f->buf + TBV_NATIVE_DATA_HDR_SIZE,
-				       (u8 *)ctx->data + offset, payload_len);
-
-			resp.opcode = TBV_NATIVE_DATA_OP_RDMA_READ_RESP;
-			resp.flags = last ? TBV_NATIVE_DATA_F_LAST : 0;
-			resp.dest_qp = req->src_qp;
-			resp.src_qp = req->dest_qp;
-			resp.psn = req->psn;
-			resp.length = payload_len;
-			resp.imm_data = total_len;
-			resp.remote_addr = 0;
-			resp.frag_offset = offset;
-
-			len = tbv_native_data_build_header(f->buf, packet_len,
-							   &resp);
-			if (len < 0) {
-				tbv_path_release_tx_frames(path, &frames);
-				ret = len;
-				goto out_put_path;
-			}
-			f->len = packet_len;
-			f->sof = TBV_DATA_PDF_FRAME_START;
-			f->eof = TBV_DATA_PDF_FRAME_END;
-			offset += payload_len;
-		}
-
-		ret = tbv_path_enqueue_tx_frames(path, &frames, chunk_frags, 0);
-		if (ret)
-			goto out_put_path;
-
-		remaining -= chunk_frags;
+	if (!selected_ref) {
+		path = tbv_path_get_for_response(path);
+		if (!path)
+			return -ENOTCONN;
 	}
 
-	if (selected_ref)
+	job = kzalloc(sizeof(*job), GFP_KERNEL);
+	if (!job) {
 		tbv_release_path_refs(&path, 1);
-	return 0;
+		return -ENOMEM;
+	}
 
-out_put_path:
-	if (selected_ref)
-		tbv_release_path_refs(&path, 1);
-	return ret;
+	tbv_read_resp_ctx_get(ctx);
+	job->read_resp = ctx;
+	job->path = path;
+	job->first_frag = 0;
+	job->frag_stride = 1;
+	job->nfrags = nfrags;
+
+	spin_lock_irqsave(&path->build_lock, flags);
+	list_add_tail(&job->node, &path->build_jobs);
+	spin_unlock_irqrestore(&path->build_lock, flags);
+	queue_delayed_work(state->workqueue ? state->workqueue :
+			   system_unbound_wq, &path->build_work, 0);
+	return 0;
 }
 
 static void tbv_read_req_workfn(struct work_struct *work)

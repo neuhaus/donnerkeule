@@ -43,22 +43,24 @@
 #include "verbs_control.h"
 #include "perf.h"
 
-static bool dmabuf_verbs;
+static bool dmabuf_verbs = true;
 module_param(dmabuf_verbs, bool, 0444);
 MODULE_PARM_DESC(dmabuf_verbs,
-	"Native descriptor verbs with DMA-BUF MRs and USB4 control; requires register_verbs=1");
+	"Native descriptor verbs with DMA-BUF MRs and USB4 control (default: 1; set 0 for native framed mode)");
 
 /* Optional bounded progress for NHIs whose completion IRQ can be missed.
  * Use the ordinary serialized ring worker; never consume descriptors here. */
 static uint dmabuf_poll_us;
+static bool dmabuf_poll_control;
+#ifdef TBV_DEV_PARAMS
 module_param(dmabuf_poll_us, uint, 0444);
 MODULE_PARM_DESC(dmabuf_poll_us,
 	"Descriptor ring progress interval in microseconds; 0 keeps IRQ/10ms watchdog behavior");
 
-static bool dmabuf_poll_control;
 module_param(dmabuf_poll_control, bool, 0444);
 MODULE_PARM_DESC(dmabuf_poll_control,
 	"Also progress existing XDomain control rings while a verbs QP exists; requires dmabuf_poll_us");
+#endif
 
 /*
  * Opt-in for the AMD 158d/158e NHI ring ABI. kernel/compat/tb_ring_layout.c
@@ -74,36 +76,37 @@ MODULE_PARM_DESC(dmabuf_poll_control,
 #endif
 static bool dmabuf_batch_doorbell;
 static char *dmabuf_batch_doorbell_mode = "auto";
-module_param_named(dmabuf_batch_doorbell, dmabuf_batch_doorbell_mode, charp, 0444);
-MODULE_PARM_DESC(dmabuf_batch_doorbell,
-	"Publish a data-ring descriptor group with one MMIO doorbell on AMD 158d/158e NHIs: auto, 1/on, or 0/off (default: auto)");
 static uint dmabuf_post_burst;
-module_param(dmabuf_post_burst, uint, 0444);
-MODULE_PARM_DESC(dmabuf_post_burst, "Frames posted per rail turn, 1..512; 0 selects 128 with bulk doorbell, 16 otherwise (default: 0)");
 static atomic64_t dmabuf_bulk_calls, dmabuf_bulk_frames, dmabuf_bulk_fallback;
 static atomic64_t dmabuf_progress_ticks, dmabuf_progress_skipped;
 static bool dmabuf_coalesce_copy = true;
-module_param(dmabuf_coalesce_copy, bool, 0444);
-MODULE_PARM_DESC(dmabuf_coalesce_copy,
-	"Copy each host-staged TX lane once instead of once per 4 KiB frame (default: 1)");
 static atomic64_t dmabuf_copy_chunks, dmabuf_copy_bytes;
 static bool dmabuf_reuse_buffers = true;
-module_param(dmabuf_reuse_buffers, bool, 0444);
-MODULE_PARM_DESC(dmabuf_reuse_buffers,
-	"Cache one drained descriptor/staging batch per rail and direction (default: 1)");
 static atomic64_t dmabuf_cache_hits, dmabuf_cache_misses, dmabuf_cache_bytes;
 static atomic64_t dmabuf_cancel_unposted, dmabuf_cancel_drained, dmabuf_cancel_stopped;
 static atomic64_t dmabuf_cancel_rx_drained, dmabuf_cancel_rx_stopped;
 static atomic64_t dmabuf_host_tx_frames, dmabuf_host_rx_frames;
-
 static bool dmabuf_credits = true;
+static uint dmabuf_credit_max = SZ_1M;
+
+#ifdef TBV_DEV_PARAMS
+module_param_named(dmabuf_batch_doorbell, dmabuf_batch_doorbell_mode, charp, 0444);
+MODULE_PARM_DESC(dmabuf_batch_doorbell,
+	"Publish a data-ring descriptor group with one MMIO doorbell on AMD 158d/158e NHIs: auto, 1/on, or 0/off (default: auto)");
+module_param(dmabuf_post_burst, uint, 0444);
+MODULE_PARM_DESC(dmabuf_post_burst, "Frames posted per rail turn, 1..512; 0 selects 128 with bulk doorbell, 16 otherwise (default: 0)");
+module_param(dmabuf_coalesce_copy, bool, 0444);
+MODULE_PARM_DESC(dmabuf_coalesce_copy,
+	"Copy each host-staged TX lane once instead of once per 4 KiB frame (default: 1)");
+module_param(dmabuf_reuse_buffers, bool, 0444);
+MODULE_PARM_DESC(dmabuf_reuse_buffers,
+	"Cache one drained descriptor/staging batch per rail and direction (default: 1)");
 module_param(dmabuf_credits, bool, 0444);
 MODULE_PARM_DESC(dmabuf_credits,
-	"Pre-arm the next SEND receive WQE so the peer can skip PREPARE; requires dmabuf_push_done=1 and dmabuf_control_ring=0 (default: 1)");
-
-static uint dmabuf_credit_max = SZ_1M;
+	"Pre-arm the next SEND receive WQE so the peer can skip PREPARE (default: 1)");
 module_param(dmabuf_credit_max, uint, 0444);
 MODULE_PARM_DESC(dmabuf_credit_max, "Largest SEND length a credit pre-arms, in bytes");
+#endif
 
 enum tbv_dmabuf_credit_counter {
 	CREDIT_GRANTED, CREDIT_COMMITTED, CREDIT_ADOPTED, CREDIT_RELEASED,

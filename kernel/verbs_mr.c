@@ -17,12 +17,14 @@ static atomic_t tbv_mr_key = ATOMIC_INIT(1);
 static bool dmabuf_host_direct = true;
 static unsigned int dmabuf_host_direct_min_bytes = SZ_4K;
 static atomic64_t host_dma_maps, host_dma_active;
+#ifdef TBV_DEV_PARAMS
 module_param(dmabuf_host_direct, bool, 0444);
 MODULE_PARM_DESC(dmabuf_host_direct,
 	"Map aligned ordinary host MRs directly to NHI descriptors; unaligned/tail WRs keep staging (default: 1)");
 module_param(dmabuf_host_direct_min_bytes, uint, 0444);
 MODULE_PARM_DESC(dmabuf_host_direct_min_bytes,
 	"Minimum page-aligned host DMA length (4096..65536, default 4096)");
+#endif
 
 void tbv_host_dma_debugfs_show(struct seq_file *s)
 {

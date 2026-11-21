@@ -14,9 +14,11 @@
 #define TBV_NATIVE_E2E_AUTO	(-1)
 
 static int native_e2e = TBV_NATIVE_E2E_AUTO;
+#ifdef TBV_DEV_PARAMS
 module_param(native_e2e, int, 0444);
 MODULE_PARM_DESC(native_e2e,
 		 "Native Linux data ring E2E mode: -1 auto, 0 off, 1 on");
+#endif
 
 static bool tbv_native_e2e_auto_enabled(const struct tbv_peer *peer)
 {

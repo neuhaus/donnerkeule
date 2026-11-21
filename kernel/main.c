@@ -11,90 +11,79 @@
 
 #include "tbv.h"
 
-static char *compat = "auto";
-module_param(compat, charp, 0444);
-MODULE_PARM_DESC(compat, "Deprecated and ignored: auto, off");
-
-static char *profile = "auto";
-module_param(profile, charp, 0444);
-MODULE_PARM_DESC(profile, "Deprecated and ignored: auto, linux_perf, mixed");
-
-static char *tbnet = "auto";
-module_param(tbnet, charp, 0444);
-MODULE_PARM_DESC(tbnet, "Deprecated and ignored by the kernel: auto, allow, prefer_rdma, block; NixOS uses thunderboltNetPolicy");
-
-static char *tbnet_identity;
-module_param(tbnet_identity, charp, 0444);
-MODULE_PARM_DESC(tbnet_identity, "Deprecated and ignored; accepted for one release");
-
-static char *lanes = "auto";
+static char *lanes = "2";
 module_param(lanes, charp, 0444);
-MODULE_PARM_DESC(lanes, "Lane request: auto, N, or MIN-MAX");
-
-static char *bringup = "auto";
-module_param(bringup, charp, 0444);
-MODULE_PARM_DESC(bringup,
-		 "Bring-up preset: auto (full when dmabuf_verbs=1), full, or off");
-
-static bool bind_services;
-module_param(bind_services, bool, 0444);
-MODULE_PARM_DESC(bind_services,
-		 "Register Thunderbolt service drivers and advertise services");
-
-static uint native_prtcstns;
-module_param(native_prtcstns, uint, 0444);
-MODULE_PARM_DESC(native_prtcstns,
-		 "Protocol settings advertised by the native Linux service");
-
-static bool allocate_rings;
-module_param(allocate_rings, bool, 0444);
-MODULE_PARM_DESC(allocate_rings,
-		 "Allocate Thunderbolt rings on service probe without enabling paths");
-
-static bool start_rings;
-module_param(start_rings, bool, 0444);
-MODULE_PARM_DESC(start_rings,
-		 "Start allocated Thunderbolt rings without enabling paths");
-
-static bool negotiate_native;
-module_param(negotiate_native, bool, 0444);
-MODULE_PARM_DESC(negotiate_native,
-		 "Send a native HELLO after ring start without enabling paths");
-
-static bool enable_tunnels;
-module_param(enable_tunnels, bool, 0444);
-MODULE_PARM_DESC(enable_tunnels,
-		 "Enable negotiated Thunderbolt paths after native HELLO");
-
-static bool native_data = true;
-module_param(native_data, bool, 0444);
-MODULE_PARM_DESC(native_data,
-		 "Allow native Linux peers to allocate rings and enable data paths");
-
-static bool native_fragment_striping;
-module_param(native_fragment_striping, bool, 0444);
-MODULE_PARM_DESC(native_fragment_striping,
-		 "Stripe native Linux SEND fragments across active rails");
-
-static bool native_write_striping;
-module_param(native_write_striping, bool, 0444);
-MODULE_PARM_DESC(native_write_striping,
-		 "Split native RDMA WRITEs into one contiguous block per active rail (both peers; implies native_fragment_striping)");
-
-static unsigned int native_write_stripe_min_bytes = 65536;
-module_param(native_write_stripe_min_bytes, uint, 0444);
-MODULE_PARM_DESC(native_write_stripe_min_bytes,
-		 "Smallest native RDMA WRITE split across rails; smaller ones stay on the QP's rail");
+MODULE_PARM_DESC(lanes, "Lane request: auto, N, or MIN-MAX (default: 2)");
 
 static unsigned int native_domain_mask = ~0u;
 module_param(native_domain_mask, uint, 0444);
 MODULE_PARM_DESC(native_domain_mask,
 		 "Bitmask of Thunderbolt domain indices whose links carry native rails (default: all)");
 
-static bool register_verbs;
+static char *bringup = "auto";
+static bool bind_services = true;
+static uint native_prtcstns;
+static bool allocate_rings = true;
+static bool start_rings = true;
+static bool negotiate_native = true;
+static bool enable_tunnels = true;
+static bool native_data = true;
+static bool native_fragment_striping;
+static bool native_write_striping = true;
+static unsigned int native_write_stripe_min_bytes = 65536;
+static bool register_verbs = true;
+
+#if defined(TBV_DEV_PARAMS) || defined(TBV_LOOPBACK)
+module_param(bind_services, bool, 0444);
+MODULE_PARM_DESC(bind_services,
+		 "Register Thunderbolt service drivers and advertise services (default: 1)");
+
 module_param(register_verbs, bool, 0444);
 MODULE_PARM_DESC(register_verbs,
-		 "Register libibverbs devices for native rails");
+		 "Register libibverbs devices for native rails (default: 1)");
+#endif
+
+#ifdef TBV_DEV_PARAMS
+module_param(bringup, charp, 0444);
+MODULE_PARM_DESC(bringup,
+		 "Bring-up preset: auto, full (default), or off");
+
+module_param(native_prtcstns, uint, 0444);
+MODULE_PARM_DESC(native_prtcstns,
+		 "Protocol settings advertised by the native service");
+
+module_param(allocate_rings, bool, 0444);
+MODULE_PARM_DESC(allocate_rings,
+		 "Allocate Thunderbolt rings on service probe (default: 1)");
+
+module_param(start_rings, bool, 0444);
+MODULE_PARM_DESC(start_rings,
+		 "Start allocated Thunderbolt rings (default: 1)");
+
+module_param(negotiate_native, bool, 0444);
+MODULE_PARM_DESC(negotiate_native,
+		 "Send a native HELLO after ring start (default: 1)");
+
+module_param(enable_tunnels, bool, 0444);
+MODULE_PARM_DESC(enable_tunnels,
+		 "Enable negotiated Thunderbolt paths after native HELLO (default: 1)");
+
+module_param(native_data, bool, 0444);
+MODULE_PARM_DESC(native_data,
+		 "Allow native Linux peers to allocate rings and enable data paths (default: 1)");
+
+module_param(native_fragment_striping, bool, 0444);
+MODULE_PARM_DESC(native_fragment_striping,
+		 "Stripe native Linux SEND fragments across active rails");
+
+module_param(native_write_striping, bool, 0444);
+MODULE_PARM_DESC(native_write_striping,
+		 "Split native RDMA WRITEs into one contiguous block per active rail (default: 1)");
+
+module_param(native_write_stripe_min_bytes, uint, 0444);
+MODULE_PARM_DESC(native_write_stripe_min_bytes,
+		 "Smallest native RDMA WRITE split across rails (default: 65536)");
+#endif
 
 static struct tbv_state tbv_driver_state;
 
@@ -105,12 +94,9 @@ static int __init tbv_init(void)
 	struct tbv_config cfg;
 	int ret;
 
-	ret = tbv_config_parse(&cfg, compat, profile, tbnet, lanes);
+	ret = tbv_config_parse(&cfg, "auto", "auto", "auto", lanes);
 	if (ret)
 		return ret;
-	if (tbnet_identity)
-		pr_warn("tbnet_identity=%s is deprecated and ignored\n",
-			tbnet_identity);
 
 	tbv_path_init_optional_symbols();
 	if (!bringup || (strcmp(bringup, "auto") && strcmp(bringup, "full") &&
@@ -120,13 +106,18 @@ static int __init tbv_init(void)
 		ret = -EINVAL;
 		goto err_path_symbols;
 	}
-	if (!strcmp(bringup, "full") ||
-	    (!strcmp(bringup, "auto") && tbv_dmabuf_verbs_enabled())) {
+	if (!strcmp(bringup, "full")) {
 		bind_services = true;
 		allocate_rings = true;
 		start_rings = true;
 		negotiate_native = true;
 		enable_tunnels = true;
+	} else if (!strcmp(bringup, "off")) {
+		bind_services = false;
+		allocate_rings = false;
+		start_rings = false;
+		negotiate_native = false;
+		enable_tunnels = false;
 	}
 	if (tbv_dmabuf_verbs_enabled() &&
 	    (!register_verbs || !bind_services || !allocate_rings || !start_rings ||

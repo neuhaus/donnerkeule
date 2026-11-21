@@ -6,6 +6,7 @@ KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 KERNEL_DIR ?= kernel
 TBV_LOOPBACK ?= 0
+TBV_DEV_PARAMS ?= 0
 
 # Expand only for DKMS targets: plain module builds may omit dkms.conf.
 DKMS_PACKAGE_NAME = $(shell awk -F '"' '/^PACKAGE_NAME=/ { print $$2; exit }' dkms.conf)
@@ -16,7 +17,7 @@ DKMS_PACKAGE_VERSION = $(shell awk -F '"' '/^PACKAGE_VERSION=/ { print $$2; exit
 all: modules
 
 modules:
-	$(MAKE) -C $(KERNEL_DIR) KVER=$(KVER) KDIR=$(KDIR) TBV_LOOPBACK=$(TBV_LOOPBACK) modules
+	$(MAKE) -C $(KERNEL_DIR) KVER=$(KVER) KDIR=$(KDIR) TBV_LOOPBACK=$(TBV_LOOPBACK) TBV_DEV_PARAMS=$(TBV_DEV_PARAMS) modules
 
 modules_install:
 	$(MAKE) -C $(KERNEL_DIR) KVER=$(KVER) KDIR=$(KDIR) modules_install

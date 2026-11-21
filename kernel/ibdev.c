@@ -82,9 +82,11 @@ MODULE_PARM_DESC(roce_netdev,
 		 "Netdev used for RoCE GID metadata, for example br0.lan");
 
 static bool dmabuf_host_credits = true;
+#ifdef TBV_DEV_PARAMS
 module_param(dmabuf_host_credits, bool, 0444);
 MODULE_PARM_DESC(dmabuf_host_credits,
                  "Pre-arm SEND credits for eligible aligned host MRs (default: 1)");
+#endif
 
 const char *tbv_ibdev_roce_netdev_name(void)
 {
@@ -92,15 +94,17 @@ const char *tbv_ibdev_roce_netdev_name(void)
 }
 
 static uint zcopy_min_bytes;
+static uint qp_timeout_ms = TBV_QP_TIMEOUT_DEFAULT_MS;
+#ifdef TBV_DEV_PARAMS
 module_param(zcopy_min_bytes, uint, 0644);
 MODULE_PARM_DESC(zcopy_min_bytes,
 		 "Minimum native bytes before raw zero-copy streaming is requested; retryable native RC WRITE falls back to framed copies");
 
-static uint qp_timeout_ms = TBV_QP_TIMEOUT_DEFAULT_MS;
 module_param(qp_timeout_ms, uint, 0644);
 MODULE_PARM_DESC(qp_timeout_ms,
 		 "Fallback milliseconds for pending native WRs and partial native receives "
 		 "when a QP has no verbs ACK timeout; 0 disables fallback timeout work");
+#endif
 
 static void tbv_rx_bad_header_context(const struct tbv_path *rx_path,
 				      u32 *peer_id, u32 *rail_id,

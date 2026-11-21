@@ -23,6 +23,11 @@ ccflags-y += -DTBV_LOOPBACK=1
 thunderbolt_ibverbs-y += ring_loop.o
 endif
 
+TBV_DEV_PARAMS ?= 0
+ifeq ($(TBV_DEV_PARAMS),1)
+ccflags-y += -DTBV_DEV_PARAMS=1
+endif
+
 # Thunderbolt dropped the probe ID argument in Linux 7.3. Probe the actual
 # headers, including distro backports, instead of assuming a version boundary.
 ifneq ($(KERNELRELEASE),)
@@ -66,6 +71,7 @@ help:
 	@echo ""
 	@echo "Build-time parameters:"
 	@echo "  TBV_PROFILING=0      Build without detailed performance tracepoints"
+	@echo "  TBV_DEV_PARAMS=1     Expose development/tuning module parameters"
 	@echo "  KVER=<release>       Build against another installed kernel"
 	@echo "  KDIR=<path>          Build against a kernel tree outside /lib/modules"
 	@echo ""

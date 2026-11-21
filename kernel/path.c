@@ -38,9 +38,11 @@ extern int tb_ring_throttling(struct tb_ring *ring,
 			      unsigned int interval_nsec);
 
 static uint nhi_interrupt_throttle_ns;
+#ifdef TBV_DEV_PARAMS
 module_param(nhi_interrupt_throttle_ns, uint, 0644);
 MODULE_PARM_DESC(nhi_interrupt_throttle_ns,
 		 "NHI interrupt throttling interval for TBV data rings in ns; 0 disables ring throttling");
+#endif
 
 static tbv_ring_throttling_fn tbv_ring_throttling;
 
@@ -62,10 +64,12 @@ void tbv_path_exit_optional_symbols(void)
 	tbv_ring_throttling = NULL;
 }
 
-static uint native_tx_max_inflight = TBV_DATA_TX_MAX_INFLIGHT;
+static uint native_tx_max_inflight = 512;
+#ifdef TBV_DEV_PARAMS
 module_param(native_tx_max_inflight, uint, 0644);
 MODULE_PARM_DESC(native_tx_max_inflight,
 		 "Maximum native data TX descriptors posted per path before waiting for completions; 0 disables native throttling");
+#endif
 
 struct tbv_tx_packet {
 	struct list_head node;

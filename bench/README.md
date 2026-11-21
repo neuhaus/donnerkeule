@@ -122,24 +122,12 @@ python3 bench/plot_perftest.py sweep.csv --out docs/img   # needs matplotlib
 reached by `ssh <server>` without a password. A case that fails leaves its
 cells empty. The `--max-size` caps skip what currently fails in native mode.
 
-Above 512 KiB perftest keeps 128 READs outstanding, which at the default ack
-timeout could not drain before the requester's one-shot timer expired. The
-requester timer is fixed: it now restarts whenever a response fragment is
-taken. The responder side is unchanged: it still resends the whole response
-every 100 ms (`TBV_READ_RESP_RETRY_MS`) until the requester ACKs it, up to 3
-times, so a very long drain can still see spurious resends and a dropped
-response. The `ib_read_bw` cap is therefore deliberately left at 524288 until
-the larger sizes are requalified on hardware; `max_rd_atomic` is still not
-enforced either, so the number of outstanding READs remains whatever the send
-queue holds.
-
-`ib_read_bw` above 512 KiB failed on this driver without striping as well, and
-`ib_send_bw` above 512 KiB fails with `native_write_striping` (which enables
-fragment striping for SENDs); the `_lat` tests passed at 1 MiB on 25 October.
-DMA-BUF verbs mode (`dmabuf_verbs=1`) has no RDMA READ, and its SENDs pass at
-all sizes. The current charts combine a native and a DMA-BUF sweep with the
-InfiniBand data; their CSVs and the reload script are in
-[2026-10-25-donnerkeule-merge](results/2026-10-25-donnerkeule-merge/sweep/).
+Native `ib_read_bw` now passes at all sizes up to 4 MiB (with `max_rd_atomic`
+paced to 16 and responder frames built on `path->build_work`); `ib_send_bw`
+above 512 KiB still requires `--max-size ib_send_bw=524288` with
+`native_write_striping`. DMA-BUF verbs mode (`dmabuf_verbs=1`, the default)
+has no RDMA READ, and its SENDs pass at all sizes. The current charts combine
+the native and DMA-BUF sweeps on `0.4.0.dk14` with the InfiniBand FDR baseline.
 
 Latency runs a fixed number of iterations (a probe sizes it to about
 `--seconds`, at most 50 000) and reports the typical, that is median,

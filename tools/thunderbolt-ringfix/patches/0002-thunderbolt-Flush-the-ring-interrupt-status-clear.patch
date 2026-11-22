@@ -1,0 +1,53 @@
+thunderbolt: Flush the ring interrupt status clear
+
+Not yet in mainline. Applied by build-dkms.sh.
+
+On hosts without QUIRK_AUTO_CLEAR_INT, ring_msix() clears the ring's
+bit in REG_RING_INT_CLEAR before it schedules ring_work(). This is a
+posted write and nothing is read from the NHI afterwards, so the clear
+can take effect after the next frame on the ring has completed. It
+then clears the status of that frame as well. The descriptor stays
+completed and the interrupt stays enabled, but no MSI-X is raised, and
+the frame waits until another interrupt on the ring runs ring_work().
+
+Before commit 468c49f44759 ("thunderbolt: Disable interrupt auto clear
+for rings") the status was cleared by reading REG_RING_NOTIFY_BASE,
+and a read is not posted.
+
+Read back REG_RING_INTERRUPT_BASE after the write, so the clear has
+taken effect before ring_work() looks at the descriptors. A frame that
+completed before that point is seen by ring_work(), and a later one
+raises a new interrupt.
+
+Seen on AMD Strix Halo USB4 host routers (1022:158d, 1022:158e). When
+the peer host sent an XDomain response and a request back to back, the
+request sometimes stayed in the control RX ring until
+tb_xdomain_request() on the peer timed out and sent it again. With the
+read back this no longer happens. Intel hosts set QUIRK_AUTO_CLEAR_INT
+and return before the write, so they are not affected.
+
+Fixes: 468c49f44759 ("thunderbolt: Disable interrupt auto clear for rings")
+Cc: stable@vger.kernel.org
+
+diff --git a/drivers/thunderbolt/nhi.c b/drivers/thunderbolt/nhi.c
+index e99a3fcc4..dd109f6ac 100644
+--- a/drivers/thunderbolt/nhi.c
++++ b/drivers/thunderbolt/nhi.c
+@@ -533,6 +533,14 @@ static void ring_clear_msix(const struct tb_ring *ring)
+ 	else
+ 		iowrite32(BIT(bit), ring->nhi->iobase + REG_RING_INT_CLEAR +
+ 			  4 * (ring->nhi->hop_count / 32));
++
++	/*
++	 * Flush the posted write before ring_work() looks at the
++	 * descriptors. Otherwise the clear can take effect after the next
++	 * frame has completed and clear its status too, and that frame
++	 * never raises an interrupt.
++	 */
++	ioread32(ring->nhi->iobase + REG_RING_INTERRUPT_BASE);
+ }
+
+ irqreturn_t ring_msix(int irq, void *data)
+--
+2.54.0 (Apple Git-157)
+

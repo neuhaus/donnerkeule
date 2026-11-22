@@ -1,0 +1,14 @@
+[Unit]
+Description=Apply AMD's USB4 host-to-host setting (H2H) on Strix Halo (usb4-h2h)
+Documentation=https://github.com/neuhaus/donnerkeule/tree/main/tools/usb4-h2h
+After=systemd-modules-load.service
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/usb4-h2h apply
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

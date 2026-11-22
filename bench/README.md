@@ -99,7 +99,7 @@ nix run .#tbv-perftest -- --hosts strix-1,strix-2 \
 `docs/img/bw_vs_size.svg` and `docs/img/lat_vs_size.svg` come from two
 scripts outside the Nix suite. `sweep_perftest.py` runs perftest between the
 host it runs on (client) and a server host over SSH, one case at a time:
-`ib_{write,read,send}_bw` and bidirectional `ib_write_bw` from 64 B to 4 MiB,
+`ib_{write,read,send}_bw` and bidirectional `ib_write_bw` from 64 B to 16 MiB,
 `ib_{write,read,send}_lat` from 64 B to 1 MiB, one QP each. While a case runs
 it samples `/proc/stat` on both hosts and records the busy CPU cores, since
 `thunderbolt_ibverbs` does most of its work in kernel workers that perftest's
@@ -127,7 +127,17 @@ paced to 16 and responder frames built on `path->build_work`); `ib_send_bw`
 above 512 KiB still requires `--max-size ib_send_bw=524288` with
 `native_write_striping`. DMA-BUF verbs mode (`dmabuf_verbs=1`, the default)
 has no RDMA READ, and its SENDs pass at all sizes. The current charts combine
-the native and DMA-BUF sweeps on `0.4.0.dk14` with the InfiniBand FDR baseline.
+the native and DMA-BUF sweeps on `0.4.0.dk14` with the USB4 H2H setting applied
+([tools/usb4-h2h](../tools/usb4-h2h/README.md)) and the patched `thunderbolt`
+driver ([tools/thunderbolt-ringfix](../tools/thunderbolt-ringfix/README.md))
+with the InfiniBand FDR baseline; the CSVs are in
+[2026-11-22-usb4-h2h](results/2026-11-22-usb4-h2h/sweep/) (`charts.csv` =
+`rf3-h2h-*.csv` + `ib-fdr.csv`).
+Native `ib_read_bw` at 16 MiB and native `ib_write_bw` at 16 KiB fail now and
+then.
+
+`--sizes 8388608,16777216` runs only the listed sizes, for example to add
+sizes to an existing CSV.
 
 Latency runs a fixed number of iterations (a probe sizes it to about
 `--seconds`, at most 50 000) and reports the typical, that is median,

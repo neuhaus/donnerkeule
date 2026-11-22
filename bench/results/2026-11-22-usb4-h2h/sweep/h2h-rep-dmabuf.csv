@@ -1,0 +1,10 @@
+label,test,size,gbps,lat_us,client_cores,server_cores
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_write_bw,4194304,60.43,,1.40,0.49
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_write_bw_bidir,4194304,120.13,,1.82,1.80
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_send_lat,64,,29.41,1.43,1.30
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_write_bw,4194304,60.73,,1.34,0.46
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_write_bw_bidir,4194304,119.57,,1.89,1.73
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_send_lat,64,,29.62,1.41,1.29
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_write_bw,4194304,60.55,,1.36,0.46
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_write_bw_bidir,4194304,120.49,,1.88,1.76
+"usb4_rdma DMA-BUF verbs, 2 cables, USB4 H2H",ib_send_lat,64,,29.69,1.41,1.35

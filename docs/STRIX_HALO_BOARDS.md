@@ -30,22 +30,29 @@ What differs is outside the driver:
 - **Kernel and distribution.** The batched doorbell (below) writes NHI ring
   descriptors directly and needs the `struct tb_ring` layout of Linux 7.2.x or
   7.3.x on x86_64. That layout is checked at build time; it is identical in
-  Ubuntu's 7.2.6, Fedora's 7.2.11 and Fedora's 7.3.3. On other kernels
+  Ubuntu's 7.2.6, Fedora's 7.2.11 and Fedora's 7.3.3 and 7.3.4. On other kernels
   (including 7.4 until its layout has been checked) the helper is compiled out
   and loading with `dmabuf_batch_doorbell=1` fails with `EOPNOTSUPP`; leave it
   off there.
 - **In-tree `thunderbolt` driver.** Two driver bugs affect this setup (both
-  verified on 7.3.3, the XDomain one also seen on 7.2.x). Their fixes are not
+  verified on 7.3.3 and 7.3.4, the XDomain one also seen on 7.2.x). Their fixes are not
   yet in mainline, so the AXB35 hosts run a rebuilt `thunderbolt.ko` with both
-  patches. On these AMD NHIs `ring_msix()` clears
+  patches ([tools/thunderbolt-ringfix](../tools/thunderbolt-ringfix/README.md)). On these AMD NHIs `ring_msix()` clears
   a ring's interrupt status with a posted write that can land after the next
   completion and erase it: the frame then waits for some later interrupt,
   which shows up as ~75 ms stalls (often exactly one QP ACK timeout) and, in
-  native mode, as retransmits. The fix reads the register back after the
-  clear. Separately, `tb_xdomain_match()` can match a fire-and-forget XDomain
+  native mode, as retransmits. The fix (v3, November 2026) leaves the status
+  set in `ring_msix()` and clears it in `ring_work()`: it hands out the frames
+  already completed, clears, reads the register back and scans once more. It
+  removes the stalls and halves the interrupt rate; native mode got about 30%
+  faster with it (a first version that read back in every interrupt cost
+  native mode 10–30%). Separately, `tb_xdomain_match()` can match a fire-and-forget XDomain
   response, so its request is freed twice (`refcount_t: underflow` in
   `tb_cfg_request_work`, a use-after-free). The stock driver runs this
   module, but with those stalls and that use-after-free.
+- **USB4 host-to-host setting (H2H).** BIOSes before 1.10 on the AXB35-02
+  leave AMD's "USB4 H2H Enhancement" off, which caps every DMA path at about
+  10 Gb/s. [tools/usb4-h2h](../tools/usb4-h2h/README.md) turns it on at boot.
 - **Secure Boot.** The Fedora hosts run lockdown; DKMS signs the module with
   the enrolled MOK. Writable debugfs and dynamic debug control are then
   unavailable, so use module parameters (`dyndbg=...`) instead.

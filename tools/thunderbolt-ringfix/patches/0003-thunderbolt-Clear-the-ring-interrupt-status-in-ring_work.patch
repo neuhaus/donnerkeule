@@ -1,0 +1,90 @@
+thunderbolt: Clear the ring interrupt status in ring_work()
+
+Not yet in mainline; on top of 0002. Applied by build-dkms.sh.
+
+The read-back added by "thunderbolt: Flush the ring interrupt status
+clear" runs in every ring interrupt and stalls the CPU for a PCIe round
+trip, about 1.5 us on AMD Strix Halo.
+
+For rings without start_poll, clear the status in ring_work() instead:
+hand out the completed frames, then clear, read back and scan once
+more. Nothing is lost, the read is off the latency path, and one read
+covers a whole run. While the status stays set the NHI raises no
+further interrupts for the ring, which halved the interrupt rate here.
+
+Rings with start_poll keep the clear in ring_msix(); the mask register
+read in __ring_interrupt_mask() already flushes it.
+
+--- a/drivers/thunderbolt/nhi.c
++++ b/drivers/thunderbolt/nhi.c
+@@ -272,6 +272,8 @@
+  * Otherwise we collect all completed frame from the ring buffer, write new
+  * frame to the ring buffer and invoke the callbacks for the completed frames.
+  */
++static void ring_clear_msix(const struct tb_ring *ring);
++
+ static void ring_work(struct work_struct *work)
+ {
+ 	struct tb_ring *ring = container_of(work, typeof(*ring), work);
+@@ -279,7 +281,21 @@
+ 	bool canceled = false;
+ 	unsigned long flags;
+ 	LIST_HEAD(done);
++	/*
++	 * For MSI-X rings without start_poll, ring_msix() leaves the
++	 * interrupt status set, so the NHI raises no further interrupt
++	 * for this ring until it is cleared here. The frames that have
++	 * already completed are handed out first; then the status is
++	 * cleared, the posted write is flushed, and the ring is scanned
++	 * once more. A frame that completes after the clear has reached
++	 * the NHI raises a new interrupt, and the read's completion also
++	 * orders the descriptor writes the NHI did before it, so the
++	 * second scan sees every frame that completed earlier.
++	 */
++	bool cleared = !(ring->irq > 0 && !ring->start_poll &&
++			 !(ring->nhi->quirks & QUIRK_AUTO_CLEAR_INT));
+ 
++again:
+ 	spin_lock_irqsave(&ring->lock, flags);
+ 
+ 	if (!ring->running) {
+@@ -321,6 +337,13 @@
+ 			frame->callback(ring, frame, canceled);
+ 	}
+ 
++	if (!cleared) {
++		cleared = true;
++		ring_clear_msix(ring);
++		ioread32(ring->nhi->iobase + REG_RING_INTERRUPT_BASE);
++		goto again;
++	}
++
+ 	wake_up(&ring->wait);
+ }
+ 
+@@ -447,14 +470,6 @@
+ 	else
+ 		iowrite32(BIT(bit), ring->nhi->iobase + REG_RING_INT_CLEAR +
+ 			  4 * (ring->nhi->hop_count / 32));
+-
+-	/*
+-	 * Flush the posted write before ring_work() looks at the
+-	 * descriptors. Otherwise the clear can take effect after the next
+-	 * frame has completed and clear its status too, and that frame
+-	 * never raises an interrupt.
+-	 */
+-	ioread32(ring->nhi->iobase + REG_RING_INTERRUPT_BASE);
+ }
+ 
+ irqreturn_t ring_msix(int irq, void *data)
+@@ -462,7 +477,9 @@
+ 	struct tb_ring *ring = data;
+ 
+ 	spin_lock(&ring->nhi->lock);
+-	ring_clear_msix(ring);
++	/* Without start_poll, ring_work() clears the status (see there) */
++	if (ring->start_poll)
++		ring_clear_msix(ring);
+ 	spin_lock(&ring->lock);
+ 	__ring_interrupt(ring);
+ 	spin_unlock(&ring->lock);

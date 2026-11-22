@@ -1,0 +1,7 @@
+label,test,size,gbps,lat_us,client_cores,server_cores
+native off-stock,ib_write_bw,4194304,44.88,,2.98,2.64
+native off-stock,ib_write_bw_bidir,4194304,85.95,,7.33,7.46
+native off-fixed2,ib_write_bw,4194304,38.47,,4.85,3.92
+native off-fixed2,ib_write_bw_bidir,4194304,61.42,,7.75,7.62
+native off-stock2,ib_write_bw,4194304,44.89,,2.97,2.09
+native off-stock2,ib_write_bw_bidir,4194304,92.99,,7.53,7.38

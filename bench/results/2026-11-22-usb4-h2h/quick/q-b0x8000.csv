@@ -1,0 +1,4 @@
+label,test,size,gbps,lat_us,client_cores,server_cores
+DMA-BUF b0x8000,ib_write_bw,4194304,39.17,,1.33,0.34
+DMA-BUF b0x8000,ib_write_bw_bidir,4194304,80.87,,1.69,1.63
+native b0x8000,ib_read_bw,1048576,9.73,,1.61,0.72

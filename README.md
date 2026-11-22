@@ -50,6 +50,18 @@ To uninstall:
 sudo make dkms-remove
 ```
 
+On Strix Halo hosts, `tools/install-strix-halo.sh` does this step and also
+installs the patched `thunderbolt` driver
+([tools/thunderbolt-ringfix](tools/thunderbolt-ringfix/README.md): fixes ~75 ms
+stalls and a use-after-free that are not in mainline yet) and, on the
+Sixunited AXB35-02 (Bosgame M5), the USB4 host-to-host setting
+([tools/usb4-h2h](tools/usb4-h2h/README.md)). Run it on both hosts, then
+continue with step 3 and reboot:
+
+```sh
+sudo tools/install-strix-halo.sh          # --no-ringfix / --no-h2h to leave one out
+```
+
 ### 3. Configure `modprobe.d`, dummy RoCE netdev, and udev
 
 `thunderbolt_net` automatically binds to USB4 peer links and claims DMA rings that RDMA rails need, so blacklist it and point `thunderbolt_ibverbs` at a dummy netdev for RoCE GID addressing:
@@ -134,14 +146,34 @@ Run `modinfo thunderbolt_ibverbs` after a build for the authoritative list of pa
 
 ## Performance Overview
 
-![Bandwidth by verb and message size with the busy CPU cores of both hosts, 1 QP: usb4_rdma over two USB4 cables in native mode with write striping and in DMA-BUF verbs mode, vs InfiniBand FDR on PCIe 3.0 x4](docs/img/bw_vs_size.svg)
+![Bandwidth by verb and message size with the busy CPU cores of both hosts, 1 QP: usb4_rdma over two USB4 cables with the USB4 H2H setting and the patched thunderbolt driver, in native mode with write striping and in DMA-BUF verbs mode, vs InfiniBand FDR on PCIe 3.0 x4](docs/img/bw_vs_size.svg)
 
-![One-way latency by verb and message size with the busy CPU cores of both hosts, 1 QP: usb4_rdma over two USB4 cables in native and DMA-BUF verbs mode vs InfiniBand FDR on PCIe 3.0 x4](docs/img/lat_vs_size.svg)
+![One-way latency by verb and message size with the busy CPU cores of both hosts, 1 QP: usb4_rdma over two USB4 cables with the USB4 H2H setting and the patched thunderbolt driver, in native and DMA-BUF verbs mode vs InfiniBand FDR on PCIe 3.0 x4](docs/img/lat_vs_size.svg)
 
-- **DMA-BUF verbs mode (`dmabuf_verbs=1`, default):** Uses 1.3–1.9 busy CPU cores, reaches ~41–42 Gb/s at 4 MiB, supports GPU DMA-BUF MRs directly (used by `gufo`), and has lower SEND latency from 64 KiB upward. Does not implement RDMA READ; small WRITE/SEND latency is ~30 µs. See [docs/GPU_VERBS.md](docs/GPU_VERBS.md).
-- **Native framed mode (`dmabuf_verbs=0`):** Reaches ~44.5 Gb/s on 1–64 MiB WRITEs with ~13 µs 4 KiB WRITE latency, supports RDMA READ (~9.5 Gb/s up to 4 MiB), and provides full frame-level retransmission.
+The charts are measured with AMD's USB4 host-to-host setting (H2H) applied
+(see [below](#usb4-host-to-host-setting-h2h)) and the patched `thunderbolt`
+driver from [tools/thunderbolt-ringfix](tools/thunderbolt-ringfix/README.md).
+Without H2H each DMA path is capped at about 10 Gb/s and both modes stop at
+~42–45 Gb/s. With the stock `thunderbolt` driver native mode reaches ~54 Gb/s
+instead of ~74, and both modes stall for ~75 ms now and then.
 
+- **DMA-BUF verbs mode (`dmabuf_verbs=1`, default):** ~62 Gb/s at 4 MiB and ~66 Gb/s at 8–16 MiB (~130 Gb/s bidirectional) on only 1.4–1.9 busy CPU cores. Supports GPU DMA-BUF MRs directly (used by `gufo`). Does not implement RDMA READ; small WRITE/SEND latency is ~28 µs and small messages are slow (see [TODO.md](TODO.md)). See [docs/GPU_VERBS.md](docs/GPU_VERBS.md).
+- **Native framed mode (`dmabuf_verbs=0`):** ~74.5 Gb/s on 4–16 MiB WRITEs (104–116 Gb/s bidirectional) and much faster below 1 MiB, but CPU-bound at ~6 busy cores on the sender and ~4 on the receiver. ~7 µs 64 B and ~9 µs 4 KiB WRITE latency, RDMA READ at ~31 Gb/s from 64 KiB, full frame-level retransmission.
+
+Results and method: [bench/results/2026-11-22-usb4-h2h.md](bench/results/2026-11-22-usb4-h2h.md).
 How the charts are generated: [bench/README.md](bench/README.md#readme-charts).
+
+---
+
+## USB4 Host-to-Host Setting (H2H)
+
+On the Sixunited AXB35-02 (Bosgame M5) with a BIOS before 1.10, AMD's "USB4 H2H
+Enhancement" is off, which caps each USB4 DMA path at about 10 Gb/s.
+[tools/usb4-h2h](tools/usb4-h2h/README.md) (from StrixFold) sends the setting to
+the SMU at runtime and restarts the USB4 routers, as a DKMS module plus a boot
+service. It lifts DMA-BUF mode from ~39 to ~61–65 Gb/s and RDMA READ from ~10
+to ~26 Gb/s. Read the risk section there first: it talks to the SMU, and it is
+verified only on the AXB35-02. Apply it on both hosts.
 
 ---
 

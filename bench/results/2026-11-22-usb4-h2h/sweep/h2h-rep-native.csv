@@ -1,0 +1,13 @@
+label,test,size,gbps,lat_us,client_cores,server_cores
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_write_bw,4194304,52.31,,3.80,4.07
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_write_bw_bidir,4194304,92.69,,7.07,7.69
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_read_bw,1048576,25.76,,2.11,1.33
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_send_bw,64,0.11,,2.88,3.02
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_write_bw,4194304,52.63,,3.84,4.06
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_write_bw_bidir,4194304,95.38,,6.53,7.42
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_read_bw,1048576,25.93,,2.05,1.32
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_send_bw,64,0.11,,2.78,3.68
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_write_bw,4194304,52.71,,3.81,4.06
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_write_bw_bidir,4194304,95.09,,7.00,7.62
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_read_bw,1048576,25.64,,2.05,1.36
+"usb4_rdma native, 2 cables (write striping), USB4 H2H",ib_send_bw,64,0.11,,2.85,3.37

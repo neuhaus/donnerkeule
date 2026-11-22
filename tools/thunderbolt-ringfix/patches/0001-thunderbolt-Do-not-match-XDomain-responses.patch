@@ -1,0 +1,56 @@
+thunderbolt: Do not match XDomain responses to received packets
+
+Not yet in mainline. Applied by build-dkms.sh.
+
+
+__tb_xdomain_response() queues a request that has no response buffer.
+tb_cfg_request() schedules its work right after sending it, and the
+request stays on ctl->request_queue until that work dequeues it.
+
+Until then tb_xdomain_match() can match a received error packet, or an
+XDomain response with the same route and UUID, to this request. The
+packet may really belong to a tb_xdomain_request() queued behind it.
+tb_ctl_rx_callback() then calls schedule_work() again. If the first run
+has already started, the work runs a second time after the request has
+been released:
+
+  refcount_t: underflow; use-after-free.
+  WARNING: lib/refcount.c:28 at refcount_warn_saturate+0x59/0x90
+  Workqueue: events tb_cfg_request_work [thunderbolt]
+  Call Trace:
+   tb_cfg_request_put+0x5a/0x70 [thunderbolt]
+   tb_cfg_request_work+0x2e/0x50 [thunderbolt]
+   process_one_work+0x19d/0x380
+
+The match also reads req->request, which points to the caller's buffer.
+That is often on the stack and gone by the time the packet arrives.
+
+This is not specific to one caller. The XDomain discovery replies in
+xdomain.c and the tb_xdomain_response() calls of the service drivers
+all queue such requests.
+
+Such a request does not wait for anything, so never match it.
+
+Fixes: d1ff70241a27 ("thunderbolt: Add support for XDomain discovery protocol")
+Cc: stable@vger.kernel.org
+diff --git a/drivers/thunderbolt/xdomain.c b/drivers/thunderbolt/xdomain.c
+index 563a8b65c..64e2842b8 100644
+--- a/drivers/thunderbolt/xdomain.c
++++ b/drivers/thunderbolt/xdomain.c
+@@ -90,6 +90,13 @@ bool tb_is_xdomain_enabled(void)
+ static bool tb_xdomain_match(const struct tb_cfg_request *req,
+ 			     const struct ctl_pkg *pkg)
+ {
++	/*
++	 * A request without a response buffer is complete once it has
++	 * been sent, and req->request may no longer be valid.
++	 */
++	if (!req->response)
++		return false;
++
+ 	switch (pkg->frame.eof) {
+ 	case TB_CFG_PKG_ERROR:
+ 		return true;
+--
+2.54.0 (Apple Git-157)
+

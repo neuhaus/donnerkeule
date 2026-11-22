@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 
-BW_SIZES = [2**k for k in range(6, 23, 2)]  # 64 B .. 4 MiB
+BW_SIZES = [2**k for k in range(6, 23, 2)] + [2**23, 2**24]  # 64 B .. 4 MiB, 8, 16 MiB
 LAT_SIZES = [2**k for k in range(6, 21, 2)]  # 64 B .. 1 MiB
 
 
@@ -105,12 +105,15 @@ def main():
     p.add_argument("--only", default="", help="substring filter on test names")
     p.add_argument("--max-size", action="append", default=[], metavar="TEST=BYTES",
                    help="skip larger sizes of a test, e.g. ib_read_bw=524288")
+    p.add_argument("--sizes", default="",
+                   help="comma-separated byte sizes to run (default: all)")
     args = p.parse_args()
 
     cases = [(t, s, False) for t in ("ib_write_bw", "ib_read_bw", "ib_send_bw") for s in BW_SIZES]
     cases += [("ib_write_bw", s, True) for s in BW_SIZES]
     cases += [(t, s, False) for t in ("ib_write_lat", "ib_read_lat", "ib_send_lat") for s in LAT_SIZES]
     max_size = {k: int(v) for k, v in (m.split("=", 1) for m in args.max_size)}
+    sizes = {int(x) for x in args.sizes.split(",") if x}
     new = not os.path.exists(args.csv)
     with open(args.csv, "a", newline="") as fh:
         w = csv.writer(fh)
@@ -121,6 +124,8 @@ def main():
             if args.only and args.only not in name:
                 continue
             if size > max_size.get(name, size):
+                continue
+            if sizes and size not in sizes:
                 continue
             iters = 0
             if test.endswith("_lat"):

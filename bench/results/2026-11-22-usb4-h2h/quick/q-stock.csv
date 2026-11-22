@@ -1,0 +1,8 @@
+label,test,size,gbps,lat_us,client_cores,server_cores
+DMA-BUF stock,ib_write_bw,4194304,61.10,,1.43,0.56
+DMA-BUF stock,ib_write_bw_bidir,4194304,116.15,,1.78,1.89
+native stock,ib_read_bw,1048576,20.52,,2.05,1.21
+native stock,ib_write_bw,16384,14.32,,1.97,1.31
+native stock,ib_write_bw,4194304,47.31,,4.54,4.08
+native stock,ib_write_bw_bidir,16384,,,0.32,0.01
+native stock,ib_write_bw_bidir,4194304,79.94,,7.49,7.28
